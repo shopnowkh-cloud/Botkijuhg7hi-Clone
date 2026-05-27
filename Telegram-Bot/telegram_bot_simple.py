@@ -20,10 +20,12 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import sys
+import threading
 import time
 from datetime import datetime, timezone, timedelta
-from urllib.parse import urlparse, quote as url_quote
+from urllib.parse import quote as url_quote
 
 import unicodedata
 from collections import OrderedDict
@@ -75,7 +77,6 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 # ── 2b. Environment Validation ────────────────────────────────────────────────
 _REQUIRED_ENV_VARS = {
     "TELEGRAM_BOT_TOKEN": "Bot token from @BotFather on Telegram",
-    "NEON_DATABASE_URL":  "Neon Postgres connection string (postgresql://...)",
 }
 
 def _validate_env() -> None:
@@ -462,24 +463,35 @@ async def run_sync(fn, *args, **kwargs):
     return await loop.run_in_executor(None, lambda: fn(*args, **kwargs))
 
 
-# ── 7a. Neon DB setup ──────────────────────────────────────────────────────────
-NEON_DATABASE_URL = os.environ.get("NEON_DATABASE_URL", "")
-_neon_host    = urlparse(NEON_DATABASE_URL).hostname if NEON_DATABASE_URL else ""
-_neon_api_url = f"https://{_neon_host}/sql"
-_neon_headers = {
-    "Neon-Connection-String": NEON_DATABASE_URL,
-    "Content-Type":  "application/json",
-    "Accept":        "application/json",
-}
+# ── 7a. SQLite DB setup ────────────────────────────────────────────────────────
+_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_data.db")
+_db_local = threading.local()
 
 
-def _neon_query(query: str, params=None) -> dict:
-    body = {"query": query}
-    if params:
-        body["params"] = [str(p) if p is not None else None for p in params]
-    resp = http.post(_neon_api_url, headers=_neon_headers, json=body, timeout=15)
-    resp.raise_for_status()
-    return resp.json()
+def _get_db_conn() -> sqlite3.Connection:
+    conn = getattr(_db_local, "conn", None)
+    if conn is None:
+        conn = sqlite3.connect(_DB_PATH, check_same_thread=False, timeout=30)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        _db_local.conn = conn
+    return conn
+
+
+def _db_query(query: str, params=None) -> dict:
+    conn = _get_db_conn()
+    try:
+        cur = conn.execute(query, params or [])
+        conn.commit()
+        rows = [dict(row) for row in cur.fetchall()]
+        return {"rows": rows}
+    except sqlite3.OperationalError as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise RuntimeError(f"DB error: {e} | query: {query[:200]}") from e
 
 
 # ── 7b. Bot Application ────────────────────────────────────────────────────────
@@ -495,95 +507,82 @@ _bot: Bot = application.bot
 
 def _init_db():
     try:
-        _neon_query("""
+        _db_query("""
             CREATE TABLE IF NOT EXISTS bot_accounts (
-                id SERIAL PRIMARY KEY, data JSONB NOT NULL DEFAULT '{}'
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                data TEXT NOT NULL DEFAULT '{}'
             )""")
-        _neon_query("""
+        _db_query("""
             CREATE TABLE IF NOT EXISTS bot_sessions (
-                id SERIAL PRIMARY KEY, data JSONB NOT NULL DEFAULT '{}'
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                data TEXT NOT NULL DEFAULT '{}'
             )""")
-        _neon_query("""
+        _db_query("""
             CREATE TABLE IF NOT EXISTS bot_pending_payments (
-                user_id BIGINT PRIMARY KEY, chat_id BIGINT NOT NULL,
-                account_type TEXT, quantity INT, total_price NUMERIC,
-                md5_hash TEXT, qr_message_id BIGINT,
-                created_at TIMESTAMPTZ DEFAULT NOW()
+                user_id INTEGER PRIMARY KEY, chat_id INTEGER NOT NULL,
+                account_type TEXT, quantity INTEGER, total_price REAL,
+                md5_hash TEXT, qr_message_id INTEGER,
+                reserved_accounts TEXT DEFAULT '[]',
+                created_at TEXT DEFAULT (datetime('now'))
             )""")
-        _neon_query("ALTER TABLE bot_pending_payments ADD COLUMN IF NOT EXISTS reserved_accounts JSONB DEFAULT '[]'")
-        _neon_query("""
+        _db_query("""
             CREATE TABLE IF NOT EXISTS bot_purchase_history (
-                id SERIAL PRIMARY KEY, user_id BIGINT NOT NULL,
-                account_type TEXT, quantity INT, total_price NUMERIC,
-                accounts JSONB DEFAULT '[]', purchased_at TIMESTAMPTZ DEFAULT NOW()
+                id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL,
+                account_type TEXT, quantity INTEGER, total_price REAL,
+                accounts TEXT DEFAULT '[]',
+                purchased_at TEXT DEFAULT (datetime('now'))
             )""")
-        _neon_query("ALTER TABLE bot_purchase_history ADD COLUMN IF NOT EXISTS accounts JSONB DEFAULT '[]'")
-        _neon_query("""
+        _db_query("""
             CREATE TABLE IF NOT EXISTS bot_known_users (
-                user_id BIGINT PRIMARY KEY, first_name TEXT, last_name TEXT,
-                username TEXT, first_seen TIMESTAMPTZ DEFAULT NOW(),
-                last_seen TIMESTAMPTZ DEFAULT NOW()
+                user_id INTEGER PRIMARY KEY, first_name TEXT, last_name TEXT,
+                username TEXT,
+                first_seen TEXT DEFAULT (datetime('now')),
+                last_seen TEXT DEFAULT (datetime('now')),
+                admin_notified INTEGER DEFAULT 0
             )""")
-        _neon_query("ALTER TABLE bot_known_users ADD COLUMN IF NOT EXISTS admin_notified BOOLEAN DEFAULT FALSE")
-        _neon_query("""
+        _db_query("""
             CREATE TABLE IF NOT EXISTS bot_sent_verifications (
                 email TEXT NOT NULL, code TEXT NOT NULL,
-                first_sent_at TIMESTAMPTZ DEFAULT NOW(), PRIMARY KEY (email, code)
+                first_sent_at TEXT DEFAULT (datetime('now')),
+                PRIMARY KEY (email, code)
             )""")
-        _neon_query("""
+        _db_query("""
             CREATE TABLE IF NOT EXISTS bot_settings (
                 key TEXT PRIMARY KEY, value TEXT
             )""")
-        _neon_query("""
+        _db_query("""
             CREATE TABLE IF NOT EXISTS bot_scheduled_deletions (
-                id SERIAL PRIMARY KEY, chat_id BIGINT NOT NULL,
-                message_id BIGINT NOT NULL, delete_at TIMESTAMPTZ NOT NULL,
-                created_at TIMESTAMPTZ DEFAULT NOW(), UNIQUE (chat_id, message_id)
+                id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL, delete_at TEXT NOT NULL,
+                created_at TEXT DEFAULT (datetime('now')),
+                UNIQUE (chat_id, message_id)
             )""")
-        _neon_query("""
+        _db_query("""
             CREATE TABLE IF NOT EXISTS bot_email_buyer_map (
-                email TEXT PRIMARY KEY, user_id BIGINT NOT NULL,
-                account_type TEXT, purchased_at TIMESTAMPTZ DEFAULT NOW()
+                email TEXT PRIMARY KEY, user_id INTEGER NOT NULL,
+                account_type TEXT,
+                purchased_at TEXT DEFAULT (datetime('now'))
             )""")
-        _neon_query("""
+        _db_query("""
             CREATE TABLE IF NOT EXISTS email_history (
-                id BIGSERIAL PRIMARY KEY,
-                telegram_user_id BIGINT NOT NULL,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                telegram_user_id INTEGER NOT NULL,
                 email_address TEXT NOT NULL,
                 dropmail_session_id TEXT,
                 address_id TEXT,
                 restore_key TEXT,
                 last_mail_id TEXT,
-                created_at TIMESTAMPTZ DEFAULT NOW()
+                created_at TEXT DEFAULT (datetime('now'))
             )""")
-        _neon_query("CREATE INDEX IF NOT EXISTS idx_email_history_user ON email_history(telegram_user_id)")
-        _neon_query("""
-            INSERT INTO bot_known_users (user_id, first_seen, last_seen, admin_notified)
-            SELECT DISTINCT user_id, MIN(purchased_at), MAX(purchased_at), TRUE
-            FROM bot_purchase_history GROUP BY user_id
-            ON CONFLICT (user_id) DO UPDATE SET admin_notified = TRUE
-        """)
-        _neon_query("""
-            INSERT INTO bot_email_buyer_map (email, user_id, account_type, purchased_at)
-            SELECT DISTINCT ON (acc->>'email')
-                acc->>'email', user_id::BIGINT, account_type, purchased_at
-            FROM bot_purchase_history,
-                 jsonb_array_elements(CASE jsonb_typeof(accounts)
-                     WHEN 'array' THEN accounts ELSE '[]'::jsonb END) AS acc
-            WHERE acc->>'email' IS NOT NULL AND acc->>'email' <> ''
-            ORDER BY acc->>'email', purchased_at DESC
-            ON CONFLICT (email) DO UPDATE
-                SET user_id=EXCLUDED.user_id, account_type=EXCLUDED.account_type,
-                    purchased_at=EXCLUDED.purchased_at
-        """)
-        r = _neon_query("SELECT COUNT(*) as cnt FROM bot_accounts")
+        _db_query("CREATE INDEX IF NOT EXISTS idx_email_history_user ON email_history(telegram_user_id)")
+        r = _db_query("SELECT COUNT(*) as cnt FROM bot_accounts")
         if int(r["rows"][0]["cnt"]) == 0:
-            _neon_query("INSERT INTO bot_accounts (data) VALUES ($1)",
-                        [json.dumps({"accounts": [], "account_types": {}, "prices": {}})])
-        r = _neon_query("SELECT COUNT(*) as cnt FROM bot_sessions")
+            _db_query("INSERT INTO bot_accounts (data) VALUES (?)",
+                      [json.dumps({"accounts": [], "account_types": {}, "prices": {}})])
+        r = _db_query("SELECT COUNT(*) as cnt FROM bot_sessions")
         if int(r["rows"][0]["cnt"]) == 0:
-            _neon_query("INSERT INTO bot_sessions (data) VALUES ($1)", [json.dumps({})])
-        logger.info("Replit PostgreSQL DB initialized")
+            _db_query("INSERT INTO bot_sessions (data) VALUES (?)", [json.dumps({})])
+        logger.info("SQLite DB initialized ✓")
     except Exception as e:
         logger.error(f"DB init failed: {e}")
 
@@ -593,7 +592,7 @@ def _get_setting(key, default=None):
     if cached is not None:
         return cached
     try:
-        r = _neon_query("SELECT value FROM bot_settings WHERE key = $1", [key])
+        r = _db_query("SELECT value FROM bot_settings WHERE key = ?", [key])
         rows = r.get("rows", [])
         val = rows[0].get("value") if rows else default
         if val is not None:
@@ -607,9 +606,9 @@ def _get_setting(key, default=None):
 def _set_setting(key, value):
     cache.set(f"setting:{key}", str(value), ttl=300)
     try:
-        _neon_query("""
-            INSERT INTO bot_settings (key, value) VALUES ($1, $2)
-            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+        _db_query("""
+            INSERT INTO bot_settings (key, value) VALUES (?, ?)
+            ON CONFLICT (key) DO UPDATE SET value = excluded.value
         """, [key, str(value)])
     except Exception as e:
         logger.error(f"Failed to save setting {key}: {e}")
@@ -617,12 +616,12 @@ def _set_setting(key, value):
 
 def _load_data():
     try:
-        r = _neon_query("SELECT data FROM bot_accounts LIMIT 1")
+        r = _db_query("SELECT data FROM bot_accounts LIMIT 1")
         if r["rows"]:
             data = r["rows"][0]["data"]
             if isinstance(data, str):
                 data = json.loads(data)
-            logger.info("Loaded accounts data from Neon DB")
+            logger.info("Loaded accounts data from SQLite DB")
             return data
     except Exception as e:
         logger.error(f"Failed to load data: {e}")
@@ -631,8 +630,8 @@ def _load_data():
 
 def _save_data():
     try:
-        _neon_query("UPDATE bot_accounts SET data = $1",
-                    [json.dumps(accounts_data, ensure_ascii=False)])
+        _db_query("UPDATE bot_accounts SET data = ?",
+                  [json.dumps(accounts_data, ensure_ascii=False)])
     except Exception as e:
         logger.error(f"Failed to save data: {e}")
 
@@ -640,13 +639,13 @@ def _save_data():
 def _load_sessions():
     global user_sessions
     try:
-        r = _neon_query("SELECT data FROM bot_sessions LIMIT 1")
+        r = _db_query("SELECT data FROM bot_sessions LIMIT 1")
         if r["rows"]:
             data = r["rows"][0]["data"]
             if isinstance(data, str):
                 data = json.loads(data)
             user_sessions = {int(k): v for k, v in data.items()}
-            logger.info("Loaded sessions from Neon DB")
+            logger.info("Loaded sessions from SQLite DB")
     except Exception as e:
         logger.error(f"Failed to load sessions: {e}")
 
@@ -654,8 +653,8 @@ def _load_sessions():
 def _save_sessions():
     try:
         payload = {str(k): v for k, v in user_sessions.items()}
-        encoded = json.dumps(payload, ensure_ascii=False).replace("'", "''")
-        _neon_query(f"UPDATE bot_sessions SET data = '{encoded}'::jsonb")
+        _db_query("UPDATE bot_sessions SET data = ?",
+                  [json.dumps(payload, ensure_ascii=False)])
     except Exception as e:
         logger.error(f"Failed to save sessions: {e}")
 
@@ -761,21 +760,21 @@ def _dropmail_check_token_info() -> dict:
 def _email_history_add(user_id: int, email_address: str, session_id: str,
                        address_id: str, restore_key: str):
     try:
-        _neon_query("""
+        _db_query("""
             INSERT INTO email_history
                 (telegram_user_id, email_address, dropmail_session_id,
                  address_id, restore_key)
-            VALUES ($1,$2,$3,$4,$5)
-        """, [str(user_id), email_address, session_id, address_id, restore_key])
+            VALUES (?,?,?,?,?)
+        """, [user_id, email_address, session_id, address_id, restore_key])
     except Exception as e:
         logger.error(f"_email_history_add failed: {e}")
 
 
 def _email_history_list(user_id: int) -> list:
     try:
-        r = _neon_query(
-            "SELECT email_address FROM email_history WHERE telegram_user_id=$1 ORDER BY created_at DESC",
-            [str(user_id)])
+        r = _db_query(
+            "SELECT email_address FROM email_history WHERE telegram_user_id=? ORDER BY created_at DESC",
+            [user_id])
         return [row["email_address"] for row in r.get("rows", [])]
     except Exception as e:
         logger.error(f"_email_history_list failed: {e}")
@@ -784,11 +783,11 @@ def _email_history_list(user_id: int) -> list:
 
 def _email_history_entries(user_id: int) -> list:
     try:
-        r = _neon_query("""
+        r = _db_query("""
             SELECT id, telegram_user_id, email_address, dropmail_session_id,
                    address_id, restore_key, last_mail_id
-            FROM email_history WHERE telegram_user_id=$1 ORDER BY created_at DESC
-        """, [str(user_id)])
+            FROM email_history WHERE telegram_user_id=? ORDER BY created_at DESC
+        """, [user_id])
         return r.get("rows", [])
     except Exception as e:
         logger.error(f"_email_history_entries failed: {e}")
@@ -797,7 +796,7 @@ def _email_history_entries(user_id: int) -> list:
 
 def _email_history_all_entries() -> list:
     try:
-        r = _neon_query("""
+        r = _db_query("""
             SELECT id, telegram_user_id, email_address, dropmail_session_id,
                    address_id, restore_key, last_mail_id
             FROM email_history WHERE restore_key IS NOT NULL
@@ -810,10 +809,10 @@ def _email_history_all_entries() -> list:
 
 def _email_history_get_by_id(entry_id: int) -> dict:
     try:
-        r = _neon_query("""
+        r = _db_query("""
             SELECT id, email_address, address_id
-            FROM email_history WHERE id=$1 LIMIT 1
-        """, [str(entry_id)])
+            FROM email_history WHERE id=? LIMIT 1
+        """, [entry_id])
         rows = r.get("rows", [])
         return rows[0] if rows else {}
     except Exception as e:
@@ -823,7 +822,7 @@ def _email_history_get_by_id(entry_id: int) -> dict:
 
 def _email_history_delete(entry_id: int):
     try:
-        _neon_query("DELETE FROM email_history WHERE id=$1", [str(entry_id)])
+        _db_query("DELETE FROM email_history WHERE id=?", [entry_id])
     except Exception as e:
         logger.error(f"_email_history_delete failed: {e}")
 
@@ -831,32 +830,32 @@ def _email_history_delete(entry_id: int):
 def _email_history_update_session(entry_id: int, session_id: str,
                                   address_id: str, restore_key: str):
     try:
-        _neon_query("""
+        _db_query("""
             UPDATE email_history
-            SET dropmail_session_id=$1, address_id=$2, restore_key=$3, last_mail_id=NULL
-            WHERE id=$4
-        """, [session_id, address_id, restore_key, str(entry_id)])
+            SET dropmail_session_id=?, address_id=?, restore_key=?, last_mail_id=NULL
+            WHERE id=?
+        """, [session_id, address_id, restore_key, entry_id])
     except Exception as e:
         logger.error(f"_email_history_update_session failed: {e}")
 
 
 def _email_history_update_last_mail(entry_id: int, mail_id: str):
     try:
-        _neon_query("UPDATE email_history SET last_mail_id=$1 WHERE id=$2",
-                    [mail_id, str(entry_id)])
+        _db_query("UPDATE email_history SET last_mail_id=? WHERE id=?",
+                  [mail_id, entry_id])
     except Exception as e:
         logger.error(f"_email_history_update_last_mail failed: {e}")
 
 
 def _email_history_get_by_email(user_id: int, email_address: str) -> dict:
     try:
-        r = _neon_query("""
+        r = _db_query("""
             SELECT id, telegram_user_id, email_address, dropmail_session_id,
                    address_id, restore_key, last_mail_id
             FROM email_history
-            WHERE telegram_user_id=$1 AND email_address=$2
+            WHERE telegram_user_id=? AND email_address=?
             ORDER BY created_at DESC LIMIT 1
-        """, [str(user_id), email_address])
+        """, [user_id, email_address])
         rows = r.get("rows", [])
         return rows[0] if rows else {}
     except Exception as e:
@@ -867,19 +866,19 @@ def _email_history_get_by_email(user_id: int, email_address: str) -> dict:
 def _save_pending_payment(user_id, chat_id, session):
     try:
         reserved = session.get("reserved_accounts") or []
-        _neon_query("""
+        _db_query("""
             INSERT INTO bot_pending_payments
-                (user_id, chat_id, account_type, quantity, total_price, md5_hash, qr_message_id, reserved_accounts)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+                (user_id, chat_id, account_type, quantity, total_price, md5_hash, qr_message_id, reserved_accounts, created_at)
+            VALUES (?,?,?,?,?,?,?,?,datetime('now'))
             ON CONFLICT (user_id) DO UPDATE SET
-                chat_id=EXCLUDED.chat_id, account_type=EXCLUDED.account_type,
-                quantity=EXCLUDED.quantity, total_price=EXCLUDED.total_price,
-                md5_hash=EXCLUDED.md5_hash, qr_message_id=EXCLUDED.qr_message_id,
-                reserved_accounts=EXCLUDED.reserved_accounts, created_at=NOW()
-        """, [str(user_id), str(chat_id),
-              session.get("account_type"), str(session.get("quantity", 1)),
-              str(session.get("total_price", 0)), session.get("md5_hash"),
-              str(session.get("qr_message_id", 0)),
+                chat_id=excluded.chat_id, account_type=excluded.account_type,
+                quantity=excluded.quantity, total_price=excluded.total_price,
+                md5_hash=excluded.md5_hash, qr_message_id=excluded.qr_message_id,
+                reserved_accounts=excluded.reserved_accounts, created_at=datetime('now')
+        """, [user_id, chat_id,
+              session.get("account_type"), session.get("quantity", 1),
+              session.get("total_price", 0), session.get("md5_hash"),
+              session.get("qr_message_id", 0),
               json.dumps(reserved, ensure_ascii=False)])
         logger.info(f"Saved pending payment for user {user_id}")
     except Exception as e:
@@ -888,7 +887,7 @@ def _save_pending_payment(user_id, chat_id, session):
 
 def _delete_pending_payment(user_id):
     try:
-        _neon_query("DELETE FROM bot_pending_payments WHERE user_id = $1", [str(user_id)])
+        _db_query("DELETE FROM bot_pending_payments WHERE user_id = ?", [user_id])
         logger.info(f"Deleted pending payment for user {user_id}")
     except Exception as e:
         logger.error(f"Failed to delete pending payment: {e}")
@@ -896,7 +895,7 @@ def _delete_pending_payment(user_id):
 
 def _get_pending_payment(user_id):
     try:
-        r = _neon_query("SELECT * FROM bot_pending_payments WHERE user_id = $1", [str(user_id)])
+        r = _db_query("SELECT * FROM bot_pending_payments WHERE user_id = ?", [user_id])
         if r["rows"]:
             row = r["rows"][0]
             reserved = row.get("reserved_accounts") or []
@@ -923,19 +922,20 @@ def _get_pending_payment(user_id):
 def _save_purchase_history(user_id, account_type, quantity, total_price, accounts=None):
     try:
         accounts_list = accounts or []
-        _neon_query(
-            "INSERT INTO bot_purchase_history (user_id,account_type,quantity,total_price,accounts) VALUES ($1,$2,$3,$4,$5)",
-            [str(user_id), account_type, str(quantity), str(total_price),
+        _db_query(
+            "INSERT INTO bot_purchase_history (user_id,account_type,quantity,total_price,accounts) VALUES (?,?,?,?,?)",
+            [user_id, account_type, quantity, total_price,
              json.dumps(accounts_list, ensure_ascii=False)])
         for acc in accounts_list:
             if isinstance(acc, dict) and acc.get("email"):
                 try:
-                    _neon_query("""
-                        INSERT INTO bot_email_buyer_map (email, user_id, account_type)
-                        VALUES ($1,$2,$3)
+                    _db_query("""
+                        INSERT INTO bot_email_buyer_map (email, user_id, account_type, purchased_at)
+                        VALUES (?,?,?,datetime('now'))
                         ON CONFLICT (email) DO UPDATE
-                            SET user_id=EXCLUDED.user_id, account_type=EXCLUDED.account_type, purchased_at=NOW()
-                    """, [str(acc["email"]).strip().lower(), str(user_id), account_type])
+                            SET user_id=excluded.user_id, account_type=excluded.account_type,
+                                purchased_at=datetime('now')
+                    """, [str(acc["email"]).strip().lower(), user_id, account_type])
                 except Exception:
                     pass
     except Exception as e:
@@ -944,10 +944,10 @@ def _save_purchase_history(user_id, account_type, quantity, total_price, account
 
 def _get_purchase_history(user_id, limit=10):
     try:
-        r = _neon_query(
+        r = _db_query(
             "SELECT account_type,quantity,total_price,accounts,purchased_at "
-            "FROM bot_purchase_history WHERE user_id=$1 ORDER BY purchased_at DESC LIMIT $2",
-            [str(user_id), str(limit)])
+            "FROM bot_purchase_history WHERE user_id=? ORDER BY purchased_at DESC LIMIT ?",
+            [user_id, limit])
         return r.get("rows", [])
     except Exception as e:
         logger.error(f"Failed to get purchase history: {e}")
@@ -959,25 +959,34 @@ def _find_buyer_by_email(email):
     if not email:
         return None
     try:
-        r = _neon_query("SELECT user_id FROM bot_email_buyer_map WHERE LOWER(email)=$1", [email])
+        r = _db_query("SELECT user_id FROM bot_email_buyer_map WHERE LOWER(email)=?", [email])
         if r.get("rows"):
             return int(r["rows"][0]["user_id"])
     except Exception:
         pass
     try:
-        r = _neon_query(
-            "SELECT user_id FROM bot_purchase_history WHERE accounts @> $1::jsonb ORDER BY purchased_at DESC LIMIT 1",
-            [json.dumps([{"email": email}])])
-        if r.get("rows"):
-            uid = int(r["rows"][0]["user_id"])
-            try:
-                _neon_query("""
-                    INSERT INTO bot_email_buyer_map (email, user_id)
-                    VALUES ($1,$2) ON CONFLICT (email) DO UPDATE SET user_id=EXCLUDED.user_id, purchased_at=NOW()
-                """, [email, str(uid)])
-            except Exception:
-                pass
-            return uid
+        rows = _db_query(
+            "SELECT user_id, accounts FROM bot_purchase_history ORDER BY purchased_at DESC"
+        ).get("rows", [])
+        for row in rows:
+            accs = row.get("accounts") or "[]"
+            if isinstance(accs, str):
+                try:
+                    accs = json.loads(accs)
+                except Exception:
+                    accs = []
+            for a in accs:
+                if isinstance(a, dict) and str(a.get("email", "")).strip().lower() == email:
+                    uid = int(row["user_id"])
+                    try:
+                        _db_query("""
+                            INSERT INTO bot_email_buyer_map (email, user_id, purchased_at)
+                            VALUES (?,?,datetime('now'))
+                            ON CONFLICT (email) DO UPDATE SET user_id=excluded.user_id, purchased_at=datetime('now')
+                        """, [email, uid])
+                    except Exception:
+                        pass
+                    return uid
     except Exception as e:
         logger.error(f"Failed to find buyer by email: {e}")
     return None
@@ -989,15 +998,23 @@ def _find_all_buyers_by_email(email):
         return []
     buyers, seen = [], set()
     try:
-        r = _neon_query(
-            "SELECT user_id, MAX(purchased_at) AS last_at FROM bot_purchase_history "
-            "WHERE accounts @> $1::jsonb GROUP BY user_id ORDER BY last_at DESC",
-            [json.dumps([{"email": email}])])
-        for row in r.get("rows", []):
-            uid = int(row["user_id"])
-            if uid not in seen:
-                seen.add(uid)
-                buyers.append(uid)
+        rows = _db_query(
+            "SELECT user_id, accounts, purchased_at FROM bot_purchase_history ORDER BY purchased_at DESC"
+        ).get("rows", [])
+        for row in rows:
+            accs = row.get("accounts") or "[]"
+            if isinstance(accs, str):
+                try:
+                    accs = json.loads(accs)
+                except Exception:
+                    accs = []
+            for a in accs:
+                if isinstance(a, dict) and str(a.get("email", "")).strip().lower() == email:
+                    uid = int(row["user_id"])
+                    if uid not in seen:
+                        seen.add(uid)
+                        buyers.append(uid)
+                    break
     except Exception:
         pass
     return buyers
@@ -1005,9 +1022,9 @@ def _find_all_buyers_by_email(email):
 
 def _filter_out_already_sold(user_id, reserved):
     try:
-        rows = _neon_query(
-            "SELECT accounts FROM bot_purchase_history WHERE user_id=$1 ORDER BY purchased_at DESC LIMIT 50",
-            [str(user_id)]).get("rows", [])
+        rows = _db_query(
+            "SELECT accounts FROM bot_purchase_history WHERE user_id=? ORDER BY purchased_at DESC LIMIT 50",
+            [user_id]).get("rows", [])
     except Exception:
         return reserved
     sold_keys = set()
@@ -1042,10 +1059,10 @@ def _filter_out_already_sold(user_id, reserved):
 
 def _cleanup_expired_pending_payments():
     try:
-        r = _neon_query(
+        r = _db_query(
             "SELECT user_id, account_type, reserved_accounts FROM bot_pending_payments "
-            "WHERE created_at + ($1 || ' seconds')::interval < NOW()",
-            [str(PAYMENT_TIMEOUT_SECONDS)])
+            "WHERE datetime(created_at, ? || ' seconds') < datetime('now')",
+            [f"+{PAYMENT_TIMEOUT_SECONDS}"])
         rows = r.get("rows", []) or []
         if not rows:
             return
@@ -1066,7 +1083,7 @@ def _cleanup_expired_pending_payments():
                     _release_reserved_accounts_sync(fake_session)
                     released += len(reserved)
                 if user_id is not None:
-                    _neon_query("DELETE FROM bot_pending_payments WHERE user_id=$1", [str(user_id)])
+                    _db_query("DELETE FROM bot_pending_payments WHERE user_id=?", [user_id])
             except Exception as e:
                 logger.warning(f"Bad expired payment row {row}: {e}")
         logger.info(f"Cleaned {len(rows)} expired payment(s); released {released} account(s)")
@@ -1076,20 +1093,20 @@ def _cleanup_expired_pending_payments():
 
 def _record_scheduled_deletion(chat_id, message_id, delay_seconds):
     try:
-        _neon_query("""
+        _db_query("""
             INSERT INTO bot_scheduled_deletions (chat_id, message_id, delete_at)
-            VALUES ($1,$2, NOW() + ($3 || ' seconds')::interval)
-            ON CONFLICT (chat_id, message_id) DO UPDATE SET delete_at=EXCLUDED.delete_at
-        """, [str(chat_id), str(message_id), str(delay_seconds)])
+            VALUES (?,?, datetime('now', ? || ' seconds'))
+            ON CONFLICT (chat_id, message_id) DO UPDATE SET delete_at=excluded.delete_at
+        """, [chat_id, message_id, f"+{delay_seconds}"])
     except Exception as e:
         logger.error(f"Failed to record scheduled deletion: {e}")
 
 
 def _clear_scheduled_deletion(chat_id, message_id):
     try:
-        _neon_query(
-            "DELETE FROM bot_scheduled_deletions WHERE chat_id=$1 AND message_id=$2",
-            [str(chat_id), str(message_id)])
+        _db_query(
+            "DELETE FROM bot_scheduled_deletions WHERE chat_id=? AND message_id=?",
+            [chat_id, message_id])
     except Exception as e:
         logger.error(f"Failed to clear scheduled deletion: {e}")
 
@@ -1098,7 +1115,7 @@ def _is_admin_notified(uid: int) -> bool:
     if uid in _notified_users:
         return True
     try:
-        r = _neon_query("SELECT admin_notified FROM bot_known_users WHERE user_id=$1", [str(uid)])
+        r = _db_query("SELECT admin_notified FROM bot_known_users WHERE user_id=?", [uid])
         rows = r.get("rows", [])
         if rows and rows[0].get("admin_notified"):
             _notified_users.add(uid)
@@ -1634,13 +1651,13 @@ async def notify_admin_new_user(user_id, first_name, last_name, username):
 
 def _upsert_known_user(user_id, first_name, last_name, username):
     try:
-        _neon_query("""
+        _db_query("""
             INSERT INTO bot_known_users (user_id, first_name, last_name, username, first_seen, last_seen, admin_notified)
-            VALUES ($1,$2,$3,$4,NOW(),NOW(),TRUE)
+            VALUES (?,?,?,?,datetime('now'),datetime('now'),1)
             ON CONFLICT (user_id) DO UPDATE SET
-                first_name=EXCLUDED.first_name, last_name=EXCLUDED.last_name,
-                username=EXCLUDED.username, last_seen=NOW(), admin_notified=TRUE
-        """, [str(user_id), first_name or "", last_name or "", username or ""])
+                first_name=excluded.first_name, last_name=excluded.last_name,
+                username=excluded.username, last_seen=datetime('now'), admin_notified=1
+        """, [user_id, first_name or "", last_name or "", username or ""])
     except Exception as e:
         logger.error(f"_upsert_known_user failed: {e}")
 
@@ -1877,7 +1894,7 @@ async def deliver_accounts(chat_id, user_id, session, payment_data=None, user_na
 async def _show_users_list_inline(chat_id):
     try:
         r = await run_sync(
-            _neon_query,
+            _db_query,
             "SELECT user_id,first_name,last_name,username,first_seen FROM bot_known_users ORDER BY first_seen DESC")
         rows = r.get("rows", [])
     except Exception as e:
@@ -1921,7 +1938,7 @@ async def _show_delete_type_menu_inline(chat_id, user_id):
 
 async def _export_buyers_report_inline(chat_id):
     try:
-        r = await run_sync(_neon_query, """
+        r = await run_sync(_db_query, """
             SELECT ph.user_id,ph.account_type,ph.quantity,ph.total_price,
                    ph.accounts,ph.purchased_at,ku.first_name,ku.last_name,ku.username
             FROM bot_purchase_history ph
@@ -2491,7 +2508,7 @@ async def _handle_admin_settings_input(chat_id, user_id, message_id, key, text):
 
 async def _run_broadcast(admin_chat_id, source_message_id, use_copy=False):
     try:
-        r = await run_sync(_neon_query, "SELECT user_id FROM bot_known_users")
+        r = await run_sync(_db_query, "SELECT user_id FROM bot_known_users")
         rows = r.get("rows", []) or []
         total, sent, failed, blocked = len(rows), 0, 0, 0
         for row in rows:
@@ -3343,11 +3360,11 @@ async def _handle_callback_locked(cq, user, user_id, chat_id, data):
 async def _check_active_pending_payments():
     try:
         r = await run_sync(
-            _neon_query,
+            _db_query,
             "SELECT user_id, chat_id, account_type, quantity, total_price, md5_hash, reserved_accounts "
             "FROM bot_pending_payments "
-            "WHERE created_at + ($1 || ' seconds')::interval >= NOW()",
-            [str(PAYMENT_TIMEOUT_SECONDS)])
+            "WHERE datetime(created_at, ? || ' seconds') >= datetime('now')",
+            [f"+{PAYMENT_TIMEOUT_SECONDS}"])
         rows = r.get("rows", []) or []
     except Exception as e:
         logger.warning(f"Failed to query active pending payments: {e}")
@@ -3473,9 +3490,9 @@ async def _email_poller(interval: int = 10):
 async def _resume_scheduled_deletions():
     try:
         r = await run_sync(
-            _neon_query,
+            _db_query,
             "SELECT chat_id, message_id, "
-            "GREATEST(0, EXTRACT(EPOCH FROM (delete_at - NOW())))::int AS remaining "
+            "MAX(0, CAST((julianday(delete_at) - julianday('now')) * 86400 AS INTEGER)) AS remaining "
             "FROM bot_scheduled_deletions")
         rows = r.get("rows", []) or []
         for row in rows:
