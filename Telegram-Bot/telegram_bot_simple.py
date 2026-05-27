@@ -185,51 +185,71 @@ async def run_sync(fn, *args, **kwargs):
     return await loop.run_in_executor(None, lambda: fn(*args, **kwargs))
 
 
-# ── 7a. PostgreSQL DB setup ────────────────────────────────────────────────────
-import psycopg2
-import psycopg2.extras
+# ── 7a. Turso (libSQL) DB setup ───────────────────────────────────────────────
+import requests as _requests
 
-_DATABASE_URL = os.environ.get("DATABASE_URL_BOT", "")
-_db_local = threading.local()
+_TURSO_URL   = os.environ.get("TURSO_URL", "").replace("libsql://", "https://")
+_TURSO_TOKEN = os.environ.get("TURSO_TOKEN", "")
+_TURSO_ENDPOINT = f"{_TURSO_URL}/v2/pipeline"
+_db_local = threading.local()  # kept for compatibility
 
 
-def _get_db_conn():
-    conn = getattr(_db_local, "conn", None)
-    if conn is None or conn.closed:
-        conn = psycopg2.connect(_DATABASE_URL)
-        conn.autocommit = True
-        _db_local.conn = conn
-    else:
-        try:
-            conn.cursor().execute("SELECT 1")
-        except Exception:
-            try:
-                conn.close()
-            except Exception:
-                pass
-            conn = psycopg2.connect(_DATABASE_URL)
-            conn.autocommit = True
-            _db_local.conn = conn
-    return conn
+def _turso_encode_arg(v):
+    if v is None:
+        return {"type": "null"}
+    if isinstance(v, bool):
+        return {"type": "integer", "value": str(int(v))}
+    if isinstance(v, int):
+        return {"type": "integer", "value": str(v)}
+    if isinstance(v, float):
+        return {"type": "float", "value": str(v)}
+    return {"type": "text", "value": str(v)}
 
 
 def _db_query(query: str, params=None) -> dict:
-    query = query.replace("?", "%s")
-    conn = _get_db_conn()
+    args = [_turso_encode_arg(p) for p in (params or [])]
+    payload = {
+        "requests": [
+            {"type": "execute", "stmt": {"sql": query, "args": args}},
+            {"type": "close"},
+        ]
+    }
     try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(query, params or [])
-            try:
-                rows = [dict(row) for row in cur.fetchall()]
-            except psycopg2.ProgrammingError:
-                rows = []
+        resp = _requests.post(
+            _TURSO_ENDPOINT,
+            headers={
+                "Authorization": f"Bearer {_TURSO_TOKEN}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        result = data["results"][0]
+        if result.get("type") == "error":
+            raise RuntimeError(result["error"]["message"])
+        res = result["response"]["result"]
+        cols = [c["name"] for c in res.get("cols", [])]
+        rows = []
+        for raw_row in res.get("rows", []):
+            row = {}
+            for i, cell in enumerate(raw_row):
+                t = cell.get("type", "null")
+                v = cell.get("value")
+                if t == "null" or v is None:
+                    row[cols[i]] = None
+                elif t == "integer":
+                    row[cols[i]] = int(v)
+                elif t == "float":
+                    row[cols[i]] = float(v)
+                else:
+                    row[cols[i]] = v
+            rows.append(row)
         return {"rows": rows}
+    except RuntimeError:
+        raise
     except Exception as e:
-        try:
-            conn.close()
-        except Exception:
-            pass
-        _db_local.conn = None
         raise RuntimeError(f"DB error: {e} | query: {query[:200]}") from e
 
 
@@ -248,41 +268,41 @@ def _init_db():
     try:
         _db_query("""
             CREATE TABLE IF NOT EXISTS bot_accounts (
-                id SERIAL PRIMARY KEY,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 data TEXT NOT NULL DEFAULT '{}'
             )""")
         _db_query("""
             CREATE TABLE IF NOT EXISTS bot_sessions (
-                id SERIAL PRIMARY KEY,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 data TEXT NOT NULL DEFAULT '{}'
             )""")
         _db_query("""
             CREATE TABLE IF NOT EXISTS bot_pending_payments (
-                user_id BIGINT PRIMARY KEY, chat_id BIGINT NOT NULL,
+                user_id INTEGER PRIMARY KEY, chat_id INTEGER NOT NULL,
                 account_type TEXT, quantity INTEGER, total_price REAL,
-                md5_hash TEXT, qr_message_id BIGINT,
+                md5_hash TEXT, qr_message_id INTEGER,
                 reserved_accounts TEXT DEFAULT '[]',
-                created_at TIMESTAMPTZ DEFAULT NOW()
+                created_at TEXT DEFAULT (datetime('now'))
             )""")
         _db_query("""
             CREATE TABLE IF NOT EXISTS bot_purchase_history (
-                id SERIAL PRIMARY KEY, user_id BIGINT NOT NULL,
+                id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL,
                 account_type TEXT, quantity INTEGER, total_price REAL,
                 accounts TEXT DEFAULT '[]',
-                purchased_at TIMESTAMPTZ DEFAULT NOW()
+                purchased_at TEXT DEFAULT (datetime('now'))
             )""")
         _db_query("""
             CREATE TABLE IF NOT EXISTS bot_known_users (
-                user_id BIGINT PRIMARY KEY, first_name TEXT, last_name TEXT,
+                user_id INTEGER PRIMARY KEY, first_name TEXT, last_name TEXT,
                 username TEXT,
-                first_seen TIMESTAMPTZ DEFAULT NOW(),
-                last_seen TIMESTAMPTZ DEFAULT NOW(),
+                first_seen TEXT DEFAULT (datetime('now')),
+                last_seen TEXT DEFAULT (datetime('now')),
                 admin_notified INTEGER DEFAULT 0
             )""")
         _db_query("""
             CREATE TABLE IF NOT EXISTS bot_sent_verifications (
                 email TEXT NOT NULL, code TEXT NOT NULL,
-                first_sent_at TIMESTAMPTZ DEFAULT NOW(),
+                first_sent_at TEXT DEFAULT (datetime('now')),
                 PRIMARY KEY (email, code)
             )""")
         _db_query("""
@@ -291,27 +311,27 @@ def _init_db():
             )""")
         _db_query("""
             CREATE TABLE IF NOT EXISTS bot_scheduled_deletions (
-                id SERIAL PRIMARY KEY, chat_id BIGINT NOT NULL,
-                message_id BIGINT NOT NULL, delete_at TIMESTAMPTZ NOT NULL,
-                created_at TIMESTAMPTZ DEFAULT NOW(),
+                id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL, delete_at TEXT NOT NULL,
+                created_at TEXT DEFAULT (datetime('now')),
                 UNIQUE (chat_id, message_id)
             )""")
         _db_query("""
             CREATE TABLE IF NOT EXISTS bot_email_buyer_map (
-                email TEXT PRIMARY KEY, user_id BIGINT NOT NULL,
+                email TEXT PRIMARY KEY, user_id INTEGER NOT NULL,
                 account_type TEXT,
-                purchased_at TIMESTAMPTZ DEFAULT NOW()
+                purchased_at TEXT DEFAULT (datetime('now'))
             )""")
         _db_query("""
             CREATE TABLE IF NOT EXISTS email_history (
-                id SERIAL PRIMARY KEY,
-                telegram_user_id BIGINT NOT NULL,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                telegram_user_id INTEGER NOT NULL,
                 email_address TEXT NOT NULL,
                 dropmail_session_id TEXT,
                 address_id TEXT,
                 restore_key TEXT,
                 last_mail_id TEXT,
-                created_at TIMESTAMPTZ DEFAULT NOW()
+                created_at TEXT DEFAULT (datetime('now'))
             )""")
         _db_query("CREATE INDEX IF NOT EXISTS idx_email_history_user ON email_history(telegram_user_id)")
         r = _db_query("SELECT COUNT(*) as cnt FROM bot_accounts")
@@ -608,12 +628,12 @@ def _save_pending_payment(user_id, chat_id, session):
         _db_query("""
             INSERT INTO bot_pending_payments
                 (user_id, chat_id, account_type, quantity, total_price, md5_hash, qr_message_id, reserved_accounts, created_at)
-            VALUES (?,?,?,?,?,?,?,?,NOW())
+            VALUES (?,?,?,?,?,?,?,?,datetime('now'))
             ON CONFLICT (user_id) DO UPDATE SET
                 chat_id=excluded.chat_id, account_type=excluded.account_type,
                 quantity=excluded.quantity, total_price=excluded.total_price,
                 md5_hash=excluded.md5_hash, qr_message_id=excluded.qr_message_id,
-                reserved_accounts=excluded.reserved_accounts, created_at=NOW()
+                reserved_accounts=excluded.reserved_accounts, created_at=datetime('now')
         """, [user_id, chat_id,
               session.get("account_type"), session.get("quantity", 1),
               session.get("total_price", 0), session.get("md5_hash"),
@@ -670,10 +690,10 @@ def _save_purchase_history(user_id, account_type, quantity, total_price, account
                 try:
                     _db_query("""
                         INSERT INTO bot_email_buyer_map (email, user_id, account_type, purchased_at)
-                        VALUES (?,?,?,NOW())
+                        VALUES (?,?,?,datetime('now'))
                         ON CONFLICT (email) DO UPDATE
                             SET user_id=excluded.user_id, account_type=excluded.account_type,
-                                purchased_at=NOW()
+                                purchased_at=datetime('now')
                     """, [str(acc["email"]).strip().lower(), user_id, account_type])
                 except Exception:
                     pass
@@ -720,8 +740,8 @@ def _find_buyer_by_email(email):
                     try:
                         _db_query("""
                             INSERT INTO bot_email_buyer_map (email, user_id, purchased_at)
-                            VALUES (?,?,NOW())
-                            ON CONFLICT (email) DO UPDATE SET user_id=excluded.user_id, purchased_at=NOW()
+                            VALUES (?,?,datetime('now'))
+                            ON CONFLICT (email) DO UPDATE SET user_id=excluded.user_id, purchased_at=datetime('now')
                         """, [email, uid])
                     except Exception:
                         pass
@@ -800,8 +820,8 @@ def _cleanup_expired_pending_payments():
     try:
         r = _db_query(
             "SELECT user_id, account_type, reserved_accounts FROM bot_pending_payments "
-            "WHERE created_at + (%s * INTERVAL '1 second') < NOW()",
-            [PAYMENT_TIMEOUT_SECONDS])
+            "WHERE datetime(created_at, ? || ' seconds') < datetime('now')",
+            [f"+{PAYMENT_TIMEOUT_SECONDS}"])
         rows = r.get("rows", []) or []
         if not rows:
             return
@@ -834,9 +854,9 @@ def _record_scheduled_deletion(chat_id, message_id, delay_seconds):
     try:
         _db_query("""
             INSERT INTO bot_scheduled_deletions (chat_id, message_id, delete_at)
-            VALUES (?,?, NOW() + (%s * INTERVAL '1 second'))
+            VALUES (?,?, datetime('now', ? || ' seconds'))
             ON CONFLICT (chat_id, message_id) DO UPDATE SET delete_at=excluded.delete_at
-        """, [chat_id, message_id, delay_seconds])
+        """, [chat_id, message_id, f"+{delay_seconds}"])
     except Exception as e:
         logger.error(f"Failed to record scheduled deletion: {e}")
 
@@ -1379,10 +1399,10 @@ def _upsert_known_user(user_id, first_name, last_name, username):
     try:
         _db_query("""
             INSERT INTO bot_known_users (user_id, first_name, last_name, username, first_seen, last_seen, admin_notified)
-            VALUES (?,?,?,?,NOW(),NOW(),1)
+            VALUES (?,?,?,?,datetime('now'),datetime('now'),1)
             ON CONFLICT (user_id) DO UPDATE SET
                 first_name=excluded.first_name, last_name=excluded.last_name,
-                username=excluded.username, last_seen=NOW(), admin_notified=1
+                username=excluded.username, last_seen=datetime('now'), admin_notified=1
         """, [user_id, first_name or "", last_name or "", username or ""])
     except Exception as e:
         logger.error(f"_upsert_known_user failed: {e}")
@@ -2963,8 +2983,8 @@ async def _check_active_pending_payments():
             _db_query,
             "SELECT user_id, chat_id, account_type, quantity, total_price, md5_hash, reserved_accounts "
             "FROM bot_pending_payments "
-            "WHERE created_at + (%s * INTERVAL '1 second') >= NOW()",
-            [PAYMENT_TIMEOUT_SECONDS])
+            "WHERE datetime(created_at, ? || ' seconds') >= datetime('now')",
+            [f"+{PAYMENT_TIMEOUT_SECONDS}"])
         rows = r.get("rows", []) or []
     except Exception as e:
         logger.warning(f"Failed to query active pending payments: {e}")
@@ -3092,7 +3112,7 @@ async def _resume_scheduled_deletions():
         r = await run_sync(
             _db_query,
             "SELECT chat_id, message_id, "
-            "GREATEST(0, EXTRACT(EPOCH FROM (delete_at - NOW()))::INTEGER) AS remaining "
+            "MAX(0, CAST((julianday(delete_at) - julianday('now')) * 86400 AS INTEGER)) AS remaining "
             "FROM bot_scheduled_deletions")
         rows = r.get("rows", []) or []
         for row in rows:
