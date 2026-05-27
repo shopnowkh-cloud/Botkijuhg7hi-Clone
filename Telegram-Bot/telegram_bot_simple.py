@@ -20,7 +20,6 @@ import json
 import logging
 import os
 import re
-import sqlite3
 import sys
 import threading
 import time
@@ -186,34 +185,51 @@ async def run_sync(fn, *args, **kwargs):
     return await loop.run_in_executor(None, lambda: fn(*args, **kwargs))
 
 
-# ── 7a. SQLite DB setup ────────────────────────────────────────────────────────
-_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_data.db")
+# ── 7a. PostgreSQL DB setup ────────────────────────────────────────────────────
+import psycopg2
+import psycopg2.extras
+
+_DATABASE_URL = os.environ.get("DATABASE_URL_BOT", "")
 _db_local = threading.local()
 
 
-def _get_db_conn() -> sqlite3.Connection:
+def _get_db_conn():
     conn = getattr(_db_local, "conn", None)
-    if conn is None:
-        conn = sqlite3.connect(_DB_PATH, check_same_thread=False, timeout=30)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA foreign_keys=ON")
+    if conn is None or conn.closed:
+        conn = psycopg2.connect(_DATABASE_URL)
+        conn.autocommit = True
         _db_local.conn = conn
+    else:
+        try:
+            conn.cursor().execute("SELECT 1")
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            conn = psycopg2.connect(_DATABASE_URL)
+            conn.autocommit = True
+            _db_local.conn = conn
     return conn
 
 
 def _db_query(query: str, params=None) -> dict:
+    query = query.replace("?", "%s")
     conn = _get_db_conn()
     try:
-        cur = conn.execute(query, params or [])
-        conn.commit()
-        rows = [dict(row) for row in cur.fetchall()]
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(query, params or [])
+            try:
+                rows = [dict(row) for row in cur.fetchall()]
+            except psycopg2.ProgrammingError:
+                rows = []
         return {"rows": rows}
-    except sqlite3.OperationalError as e:
+    except Exception as e:
         try:
-            conn.rollback()
+            conn.close()
         except Exception:
             pass
+        _db_local.conn = None
         raise RuntimeError(f"DB error: {e} | query: {query[:200]}") from e
 
 
@@ -232,41 +248,41 @@ def _init_db():
     try:
         _db_query("""
             CREATE TABLE IF NOT EXISTS bot_accounts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 data TEXT NOT NULL DEFAULT '{}'
             )""")
         _db_query("""
             CREATE TABLE IF NOT EXISTS bot_sessions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 data TEXT NOT NULL DEFAULT '{}'
             )""")
         _db_query("""
             CREATE TABLE IF NOT EXISTS bot_pending_payments (
-                user_id INTEGER PRIMARY KEY, chat_id INTEGER NOT NULL,
+                user_id BIGINT PRIMARY KEY, chat_id BIGINT NOT NULL,
                 account_type TEXT, quantity INTEGER, total_price REAL,
-                md5_hash TEXT, qr_message_id INTEGER,
+                md5_hash TEXT, qr_message_id BIGINT,
                 reserved_accounts TEXT DEFAULT '[]',
-                created_at TEXT DEFAULT (datetime('now'))
+                created_at TIMESTAMPTZ DEFAULT NOW()
             )""")
         _db_query("""
             CREATE TABLE IF NOT EXISTS bot_purchase_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL,
+                id SERIAL PRIMARY KEY, user_id BIGINT NOT NULL,
                 account_type TEXT, quantity INTEGER, total_price REAL,
                 accounts TEXT DEFAULT '[]',
-                purchased_at TEXT DEFAULT (datetime('now'))
+                purchased_at TIMESTAMPTZ DEFAULT NOW()
             )""")
         _db_query("""
             CREATE TABLE IF NOT EXISTS bot_known_users (
-                user_id INTEGER PRIMARY KEY, first_name TEXT, last_name TEXT,
+                user_id BIGINT PRIMARY KEY, first_name TEXT, last_name TEXT,
                 username TEXT,
-                first_seen TEXT DEFAULT (datetime('now')),
-                last_seen TEXT DEFAULT (datetime('now')),
+                first_seen TIMESTAMPTZ DEFAULT NOW(),
+                last_seen TIMESTAMPTZ DEFAULT NOW(),
                 admin_notified INTEGER DEFAULT 0
             )""")
         _db_query("""
             CREATE TABLE IF NOT EXISTS bot_sent_verifications (
                 email TEXT NOT NULL, code TEXT NOT NULL,
-                first_sent_at TEXT DEFAULT (datetime('now')),
+                first_sent_at TIMESTAMPTZ DEFAULT NOW(),
                 PRIMARY KEY (email, code)
             )""")
         _db_query("""
@@ -275,27 +291,27 @@ def _init_db():
             )""")
         _db_query("""
             CREATE TABLE IF NOT EXISTS bot_scheduled_deletions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL,
-                message_id INTEGER NOT NULL, delete_at TEXT NOT NULL,
-                created_at TEXT DEFAULT (datetime('now')),
+                id SERIAL PRIMARY KEY, chat_id BIGINT NOT NULL,
+                message_id BIGINT NOT NULL, delete_at TIMESTAMPTZ NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
                 UNIQUE (chat_id, message_id)
             )""")
         _db_query("""
             CREATE TABLE IF NOT EXISTS bot_email_buyer_map (
-                email TEXT PRIMARY KEY, user_id INTEGER NOT NULL,
+                email TEXT PRIMARY KEY, user_id BIGINT NOT NULL,
                 account_type TEXT,
-                purchased_at TEXT DEFAULT (datetime('now'))
+                purchased_at TIMESTAMPTZ DEFAULT NOW()
             )""")
         _db_query("""
             CREATE TABLE IF NOT EXISTS email_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                telegram_user_id INTEGER NOT NULL,
+                id SERIAL PRIMARY KEY,
+                telegram_user_id BIGINT NOT NULL,
                 email_address TEXT NOT NULL,
                 dropmail_session_id TEXT,
                 address_id TEXT,
                 restore_key TEXT,
                 last_mail_id TEXT,
-                created_at TEXT DEFAULT (datetime('now'))
+                created_at TIMESTAMPTZ DEFAULT NOW()
             )""")
         _db_query("CREATE INDEX IF NOT EXISTS idx_email_history_user ON email_history(telegram_user_id)")
         r = _db_query("SELECT COUNT(*) as cnt FROM bot_accounts")
@@ -592,12 +608,12 @@ def _save_pending_payment(user_id, chat_id, session):
         _db_query("""
             INSERT INTO bot_pending_payments
                 (user_id, chat_id, account_type, quantity, total_price, md5_hash, qr_message_id, reserved_accounts, created_at)
-            VALUES (?,?,?,?,?,?,?,?,datetime('now'))
+            VALUES (?,?,?,?,?,?,?,?,NOW())
             ON CONFLICT (user_id) DO UPDATE SET
                 chat_id=excluded.chat_id, account_type=excluded.account_type,
                 quantity=excluded.quantity, total_price=excluded.total_price,
                 md5_hash=excluded.md5_hash, qr_message_id=excluded.qr_message_id,
-                reserved_accounts=excluded.reserved_accounts, created_at=datetime('now')
+                reserved_accounts=excluded.reserved_accounts, created_at=NOW()
         """, [user_id, chat_id,
               session.get("account_type"), session.get("quantity", 1),
               session.get("total_price", 0), session.get("md5_hash"),
@@ -654,10 +670,10 @@ def _save_purchase_history(user_id, account_type, quantity, total_price, account
                 try:
                     _db_query("""
                         INSERT INTO bot_email_buyer_map (email, user_id, account_type, purchased_at)
-                        VALUES (?,?,?,datetime('now'))
+                        VALUES (?,?,?,NOW())
                         ON CONFLICT (email) DO UPDATE
                             SET user_id=excluded.user_id, account_type=excluded.account_type,
-                                purchased_at=datetime('now')
+                                purchased_at=NOW()
                     """, [str(acc["email"]).strip().lower(), user_id, account_type])
                 except Exception:
                     pass
@@ -704,8 +720,8 @@ def _find_buyer_by_email(email):
                     try:
                         _db_query("""
                             INSERT INTO bot_email_buyer_map (email, user_id, purchased_at)
-                            VALUES (?,?,datetime('now'))
-                            ON CONFLICT (email) DO UPDATE SET user_id=excluded.user_id, purchased_at=datetime('now')
+                            VALUES (?,?,NOW())
+                            ON CONFLICT (email) DO UPDATE SET user_id=excluded.user_id, purchased_at=NOW()
                         """, [email, uid])
                     except Exception:
                         pass
@@ -784,8 +800,8 @@ def _cleanup_expired_pending_payments():
     try:
         r = _db_query(
             "SELECT user_id, account_type, reserved_accounts FROM bot_pending_payments "
-            "WHERE datetime(created_at, ? || ' seconds') < datetime('now')",
-            [f"+{PAYMENT_TIMEOUT_SECONDS}"])
+            "WHERE created_at + (%s * INTERVAL '1 second') < NOW()",
+            [PAYMENT_TIMEOUT_SECONDS])
         rows = r.get("rows", []) or []
         if not rows:
             return
@@ -818,9 +834,9 @@ def _record_scheduled_deletion(chat_id, message_id, delay_seconds):
     try:
         _db_query("""
             INSERT INTO bot_scheduled_deletions (chat_id, message_id, delete_at)
-            VALUES (?,?, datetime('now', ? || ' seconds'))
+            VALUES (?,?, NOW() + (%s * INTERVAL '1 second'))
             ON CONFLICT (chat_id, message_id) DO UPDATE SET delete_at=excluded.delete_at
-        """, [chat_id, message_id, f"+{delay_seconds}"])
+        """, [chat_id, message_id, delay_seconds])
     except Exception as e:
         logger.error(f"Failed to record scheduled deletion: {e}")
 
@@ -1363,10 +1379,10 @@ def _upsert_known_user(user_id, first_name, last_name, username):
     try:
         _db_query("""
             INSERT INTO bot_known_users (user_id, first_name, last_name, username, first_seen, last_seen, admin_notified)
-            VALUES (?,?,?,?,datetime('now'),datetime('now'),1)
+            VALUES (?,?,?,?,NOW(),NOW(),1)
             ON CONFLICT (user_id) DO UPDATE SET
                 first_name=excluded.first_name, last_name=excluded.last_name,
-                username=excluded.username, last_seen=datetime('now'), admin_notified=1
+                username=excluded.username, last_seen=NOW(), admin_notified=1
         """, [user_id, first_name or "", last_name or "", username or ""])
     except Exception as e:
         logger.error(f"_upsert_known_user failed: {e}")
@@ -2947,8 +2963,8 @@ async def _check_active_pending_payments():
             _db_query,
             "SELECT user_id, chat_id, account_type, quantity, total_price, md5_hash, reserved_accounts "
             "FROM bot_pending_payments "
-            "WHERE datetime(created_at, ? || ' seconds') >= datetime('now')",
-            [f"+{PAYMENT_TIMEOUT_SECONDS}"])
+            "WHERE created_at + (%s * INTERVAL '1 second') >= NOW()",
+            [PAYMENT_TIMEOUT_SECONDS])
         rows = r.get("rows", []) or []
     except Exception as e:
         logger.warning(f"Failed to query active pending payments: {e}")
@@ -3076,7 +3092,7 @@ async def _resume_scheduled_deletions():
         r = await run_sync(
             _db_query,
             "SELECT chat_id, message_id, "
-            "MAX(0, CAST((julianday(delete_at) - julianday('now')) * 86400 AS INTEGER)) AS remaining "
+            "GREATEST(0, EXTRACT(EPOCH FROM (delete_at - NOW()))::INTEGER) AS remaining "
             "FROM bot_scheduled_deletions")
         rows = r.get("rows", []) or []
         for row in rows:
