@@ -22,26 +22,39 @@ async def _init_app():
     global _initialized
     if _initialized:
         return
-    from telegram_bot_simple import application, _register_handlers
-    _register_handlers()
-    await application.initialize()
-    _initialized = True
+    try:
+        from telegram_bot_simple import application, _register_handlers
+        _register_handlers()
+        await application.initialize()
+        _initialized = True
+        logger.info("Bot application initialized via webhook cold start")
+    except Exception as e:
+        logger.error(f"Failed to initialize bot application: {e}", exc_info=True)
+        raise
+
+
+async def _handle_update(body: bytes):
+    from telegram import Update
+    from telegram_bot_simple import application
+
+    await _init_app()
+    update_data = json.loads(body)
+    update = Update.de_json(update_data, application.bot)
+    await application.process_update(update)
+
+    # drain fire-and-forget tasks (e.g. _upsert_known_user)
+    pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
 
 
 class handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
-        from telegram import Update
-        from telegram_bot_simple import application
-
         content_length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(content_length)
-
         try:
-            update_data = json.loads(body)
-            _loop.run_until_complete(_init_app())
-            update = Update.de_json(update_data, application.bot)
-            _loop.run_until_complete(application.process_update(update))
+            _loop.run_until_complete(_handle_update(body))
         except Exception as e:
             logger.error(f"Webhook error: {e}", exc_info=True)
 
@@ -51,10 +64,11 @@ class handler(BaseHTTPRequestHandler):
         self.wfile.write(b'OK')
 
     def do_GET(self):
+        status = "initialized" if _initialized else "cold"
         self.send_response(200)
-        self.send_header('Content-Type', 'text/plain')
+        self.send_header('Content-Type', 'application/json')
         self.end_headers()
-        self.wfile.write(b'Telegram Bot Webhook - OK')
+        self.wfile.write(json.dumps({"status": status, "ok": True}).encode())
 
     def log_message(self, format, *args):
         logger.info('[HTTP] ' + format % args)
