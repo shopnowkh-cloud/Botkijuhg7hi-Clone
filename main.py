@@ -33,7 +33,6 @@ from io import BytesIO
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from bakong_khqr import KHQR
 
 try:
     from langdetect import detect as _langdetect_detect, detect_langs as _langdetect_langs, DetectorFactory as _DetectorFactory
@@ -105,10 +104,7 @@ PAYMENT_TIMEOUT_SECONDS = 60
 PAYMENT_POLL_INTERVAL   = 5
 KHMER_MESSAGE = "ជ្រើសរើស គូប៉ុង ដើម្បីបញ្ជាទិញ"
 
-BAKONG_RELAY_TOKEN = os.environ.get("BAKONG_RELAY_TOKEN", "")
-BAKONG_API_TOKEN   = os.environ.get("BAKONG_TOKEN", "")
-BAKONG_TOKEN       = BAKONG_RELAY_TOKEN if BAKONG_RELAY_TOKEN else BAKONG_API_TOKEN
-khqr_client        = KHQR(BAKONG_TOKEN) if BAKONG_TOKEN else None
+RELAY_API_BASE = "https://bakong.cambo-kh.com/api/payment"
 
 
 DROPMAIL_API_TOKEN    = os.environ.get("DROPMAIL_API_TOKEN", "")
@@ -862,78 +858,27 @@ def _is_admin_notified(uid: int) -> bool:
 
 
 # ── 9. KHQR / Payment helpers ──────────────────────────────────────────────────
-def _crc16_ccitt(data: str) -> str:
-    crc = 0xFFFF
-    for ch in data:
-        crc ^= ord(ch) << 8
-        for _ in range(8):
-            crc = ((crc << 1) ^ 0x1021) if (crc & 0x8000) else (crc << 1)
-            crc &= 0xFFFF
-    return f"{crc:04X}"
-
-
-def _tlv(tag: str, value: str) -> str:
-    return f"{tag}{len(value):02d}{value}"
-
-
-def _build_khqr_manual(bank_account, merchant_name, merchant_city,
-                        amount, bill_number, phone, store_label, terminal_label):
-    if phone.startswith("855"):
-        phone_local = "0" + phone[3:]
-    else:
-        phone_local = phone[-9:] if len(phone) > 9 else phone
-    add_data = (_tlv("03", store_label) + _tlv("02", phone_local) +
-                _tlv("01", bill_number) + _tlv("07", terminal_label))
-    now_ms = str(int(time.time() * 1000))
-    exp_ms = str(int((time.time() + 86400) * 1000))
-    info_data = _tlv("00", now_ms) + _tlv("01", exp_ms)
-    body = (
-        _tlv("00", "01") + _tlv("01", "12") +
-        _tlv("29", _tlv("00", bank_account)) + _tlv("52", "5999") +
-        _tlv("53", "840") + _tlv("54", f"{amount:.2f}") +
-        _tlv("58", "KH") + _tlv("59", merchant_name) +
-        _tlv("60", merchant_city) + _tlv("62", add_data) +
-        _tlv("99", info_data) + "6304"
-    )
-    return body + _crc16_ccitt(body)
-
-
-def _compute_md5(qr: str) -> str:
-    return hashlib.md5(qr.encode("utf-8")).hexdigest()
-
-
 def _generate_payment_qr(amount):
-    if not BAKONG_TOKEN or not khqr_client:
-        return None, "BAKONG_TOKEN មិនមាន", None
     try:
-        bill_number = f"TRX{int(time.time())}"
-        try:
-            try:
-                qr = khqr_client.create_qr(
-                    bank_account="sovannrady@aclb", merchant_name=PAYMENT_NAME,
-                    merchant_city="KPS", amount=amount, currency="USD",
-                    store_label=PAYMENT_NAME, phone_number="85593330905",
-                    bill_number=bill_number, terminal_label="Cashier-01",
-                    static=False, expiration=1)
-            except TypeError:
-                qr = khqr_client.create_qr(
-                    bank_account="sovannrady@aclb", merchant_name=PAYMENT_NAME,
-                    merchant_city="KPS", amount=amount, currency="USD",
-                    store_label=PAYMENT_NAME, phone_number="85593330905",
-                    bill_number=bill_number, terminal_label="Cashier-01", static=False)
-            if "5303840" not in qr or "5404" not in qr:
-                qr = _build_khqr_manual(
-                    "sovannrady@aclb", PAYMENT_NAME, "KPS", amount,
-                    bill_number, "85593330905", PAYMENT_NAME, "Cashier-01")
-        except Exception as e:
-            return None, f"create_qr failed: {e}", None
-
-        md5 = _compute_md5(qr)
+        resp = http.get(
+            f"{RELAY_API_BASE}?type=generate_qr&user_tg_id={ADMIN_ID}&amount={amount:.2f}",
+            timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("status") != "success":
+            return None, data.get("message", "QR generation failed"), None
+        payload = data["data"]
+        qr  = payload["qr"]
+        md5 = payload["md5"]
         img_bytes = None
-        try:
-            img_bytes = khqr_client.qr_image(qr, format="bytes")
-        except Exception as e1:
-            logger.warning(f"bakong-khqr image failed: {e1}")
+        url_qr = payload.get("Url_qr_code")
+        if url_qr:
+            try:
+                img_resp = http.get(url_qr, timeout=10)
+                img_resp.raise_for_status()
+                img_bytes = img_resp.content
+            except Exception as e:
+                logger.warning(f"Failed to download QR image: {e}")
         if not img_bytes:
             try:
                 import qrcode as _qrcode
@@ -941,51 +886,33 @@ def _generate_payment_qr(amount):
                 _qrcode.make(qr).save(buf, format="PNG")
                 img_bytes = buf.getvalue()
             except Exception as e2:
-                logger.warning(f"qrcode lib failed: {e2}")
+                logger.warning(f"qrcode fallback failed: {e2}")
         if not img_bytes:
             try:
-                resp = http.get(
+                img_resp = http.get(
                     f"https://api.qrserver.com/v1/create-qr-code/?size=500x500&data={url_quote(qr)}",
                     timeout=10)
-                resp.raise_for_status()
-                img_bytes = resp.content
+                img_resp.raise_for_status()
+                img_bytes = img_resp.content
             except Exception as e3:
-                return None, f"All QR methods failed: {e3}", None
+                return None, f"All QR image methods failed: {e3}", None
         return img_bytes, md5, qr
     except Exception as e:
-        return None, f"Unexpected: {e}", None
-
-
-def _bakong_api_url(token=None):
-    t = token or BAKONG_TOKEN
-    if t and t.startswith("rbk"):
-        return "https://api.bakongrelay.com/v1"
-    return "https://api-bakong.nbc.gov.kh/v1"
+        return None, f"QR API error: {e}", None
 
 
 def _check_payment_status(md5):
-    tokens = []
-    if BAKONG_RELAY_TOKEN:
-        tokens.append(BAKONG_RELAY_TOKEN)
-    if BAKONG_API_TOKEN and BAKONG_API_TOKEN not in tokens:
-        tokens.append(BAKONG_API_TOKEN)
-    if not tokens and BAKONG_TOKEN:
-        tokens.append(BAKONG_TOKEN)
-    for token in tokens:
-        try:
-            base = _bakong_api_url(token)
-            resp = http.post(
-                f"{base}/check_transaction_by_md5",
-                json={"md5": md5},
-                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-                timeout=10)
-            data = resp.json()
-            logger.info(f"check_payment via {'relay' if token.startswith('rbk') else 'bakong'}: "
-                        f"status={resp.status_code} responseCode={data.get('responseCode')}")
-            if data.get("responseCode") == 0:
-                return True, data.get("data", {})
-        except Exception as e:
-            logger.warning(f"check_payment token error: {e}")
+    try:
+        resp = http.get(
+            f"{RELAY_API_BASE}?type=check_md5&user_tg_id={ADMIN_ID}&md5={md5}",
+            timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        logger.info(f"check_payment relay: status={resp.status_code} result={data.get('status')}")
+        if data.get("status") == "success":
+            return True, data.get("data", {})
+    except Exception as e:
+        logger.warning(f"check_payment error: {e}")
     return False, None
 
 
@@ -1808,11 +1735,11 @@ async def _show_payment_inline(chat_id):
 
 
 async def _show_bakong_inline(chat_id):
-    api_t = BAKONG_API_TOKEN if BAKONG_API_TOKEN else "(មិនទាន់កំណត់)"
     await send_msg(
         chat_id,
-        f"🔑 <b>Bakong Token បច្ចុប្បន្ន៖</b>\n\n"
-        f"<code>{html.escape(api_t)}</code>",
+        f"🔑 <b>Bakong Payment Relay:</b>\n\n"
+        f"<code>{html.escape(RELAY_API_BASE)}</code>\n"
+        f"✅ ប្រើ Relay API (cambo-kh.com)",
         reply_markup=BAKONG_SUBMENU_KB)
 
 
@@ -1852,17 +1779,7 @@ def _days_status(days_left) -> str:
 async def _send_combined_token_info(chat_id: int, reply_markup) -> None:
     lines = ["🔑 <b>Token Info</b>\n"]
     lines.append("━━━ 🏦 Bakong ━━━")
-    token = BAKONG_API_TOKEN
-    if not token:
-        lines.append("❌ មិនទាន់មាន Bakong Token ទេ។")
-    else:
-        exp_dt, days_left = _decode_jwt_expiry(token)
-        lines.append(f"Token: <code>{html.escape(token[:10])}…</code>")
-        if exp_dt:
-            lines.append(f"📅 Expire: <b>{exp_dt.strftime('%Y-%m-%d %H:%M UTC')}</b>")
-            lines.append(f"⏳ ស្ថានភាព: {_days_status(days_left)}")
-        else:
-            lines.append("📅 Expire: <b>មិនអាចបំបែក JWT បាន</b>")
+    lines.append("✅ ប្រើ Relay API (cambo-kh.com)")
     lines.append("\n━━━ 📧 Dropmail ━━━")
     if not DROPMAIL_API_TOKEN:
         lines.append("❌ មិនទាន់មាន Dropmail Token ទេ។")
@@ -1981,7 +1898,7 @@ async def _dispatch_admin_button(update: Update, user_id, chat_id, btn):
 
 
 async def _handle_admin_settings_input(chat_id, user_id, message_id, key, text):
-    global PAYMENT_NAME, BAKONG_TOKEN, BAKONG_RELAY_TOKEN, BAKONG_API_TOKEN, khqr_client, CHANNEL_ID, EXTRA_ADMIN_IDS, DROPMAIL_API_TOKEN, DROPMAIL_TOKEN_EXPIRY, _DROPMAIL_URL
+    global PAYMENT_NAME, CHANNEL_ID, EXTRA_ADMIN_IDS, DROPMAIL_API_TOKEN, DROPMAIL_TOKEN_EXPIRY, _DROPMAIL_URL
     raw = (text or "").strip()
     cancel_words = {"បោះបង់", "🚫 បោះបង់"}
     if raw in cancel_words or raw == BTN_BACK_SETTINGS:
@@ -2009,19 +1926,6 @@ async def _handle_admin_settings_input(chat_id, user_id, message_id, key, text):
         if not raw:
             await send_msg(chat_id, "សូមផ្ញើ Bakong token ថ្មី (ឬចុច 🚫 បោះបង់)")
             return True
-        try:
-            KHQR(raw)
-        except Exception as e:
-            await send_msg(chat_id, f"❌ Token មិនត្រឹមត្រូវ៖ <code>{html.escape(str(e))}</code>")
-            return True
-        BAKONG_API_TOKEN = raw
-        await run_sync(_set_setting, "BAKONG_API_TOKEN", raw)
-        label = "Bakong Token"
-        BAKONG_TOKEN = BAKONG_API_TOKEN
-        try:
-            khqr_client = KHQR(BAKONG_TOKEN)
-        except Exception:
-            pass
         asyncio.create_task(delete_msg(chat_id, message_id))
         async with _data_lock:
             user_sessions.pop(user_id, None)
@@ -3111,8 +3015,7 @@ async def _resume_scheduled_deletions():
 # ── 20. Startup ───────────────────────────────────────────────────────────────
 async def _on_startup(app_: Application):
     global accounts_data, PAYMENT_NAME, MAINTENANCE_MODE, CHANNEL_ID
-    global BAKONG_TOKEN, BAKONG_RELAY_TOKEN, BAKONG_API_TOKEN, khqr_client, EXTRA_ADMIN_IDS
-    global DROPMAIL_API_TOKEN, DROPMAIL_TOKEN_EXPIRY, _DROPMAIL_URL
+    global EXTRA_ADMIN_IDS, DROPMAIL_API_TOKEN, DROPMAIL_TOKEN_EXPIRY, _DROPMAIL_URL
 
     await run_sync(_init_db)
 
@@ -3134,30 +3037,6 @@ async def _on_startup(app_: Application):
         except Exception:
             pass
 
-    _sv_relay = await run_sync(_get_setting, "BAKONG_RELAY_TOKEN")
-    if _sv_relay:
-        BAKONG_RELAY_TOKEN = _sv_relay
-        logger.info(f"Loaded BAKONG_RELAY_TOKEN from DB: {BAKONG_RELAY_TOKEN[:10]}...")
-
-    _sv_api = await run_sync(_get_setting, "BAKONG_API_TOKEN")
-    if _sv_api:
-        BAKONG_API_TOKEN = _sv_api
-        logger.info(f"Loaded BAKONG_API_TOKEN from DB: {BAKONG_API_TOKEN[:10]}...")
-
-    _sv_legacy = await run_sync(_get_setting, "BAKONG_TOKEN")
-    if _sv_legacy and not _sv_relay and not _sv_api:
-        if _sv_legacy.startswith("rbk"):
-            BAKONG_RELAY_TOKEN = _sv_legacy
-        else:
-            BAKONG_API_TOKEN = _sv_legacy
-
-    BAKONG_TOKEN = BAKONG_RELAY_TOKEN if BAKONG_RELAY_TOKEN else BAKONG_API_TOKEN
-    if BAKONG_TOKEN:
-        try:
-            khqr_client = KHQR(BAKONG_TOKEN)
-            logger.info(f"Active BAKONG_TOKEN: {'relay' if BAKONG_TOKEN.startswith('rbk') else 'bakong'} ({BAKONG_TOKEN[:10]}...)")
-        except Exception as e:
-            logger.error(f"Failed to rebuild KHQR client: {e}")
 
     _sv = await run_sync(_get_setting, "TELEGRAM_CHANNEL_ID")
     if _sv:
