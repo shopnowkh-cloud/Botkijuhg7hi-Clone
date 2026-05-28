@@ -103,6 +103,8 @@ KHMER_MESSAGE = "ជ្រើសរើស គូប៉ុង ដើម្បី�
 
 RELAY_API_BASE = "https://bakong.cambo-kh.com/api/payment"
 
+_out_of_stock_msg: dict = {}
+
 
 DROPMAIL_API_TOKEN    = os.environ.get("DROPMAIL_API_TOKEN", "")
 DROPMAIL_TOKEN_EXPIRY = ""
@@ -1187,9 +1189,15 @@ async def show_account_selection(chat_id):
             if len(accs) > 0
         ]
     if not available:
-        await send_msg(chat_id, "<i>សូមអភ័យទោស អស់ពីស្តុក 🪤</i>",
-                       parse_mode=ParseMode.HTML)
+        old_mid = _out_of_stock_msg.get(chat_id)
+        if old_mid:
+            asyncio.create_task(delete_msg(chat_id, old_mid))
+        sent = await send_msg(chat_id, "<i>សូមអភ័យទោស អស់ពីស្តុក 🪤</i>",
+                              parse_mode=ParseMode.HTML)
+        if sent:
+            _out_of_stock_msg[chat_id] = sent.message_id
         return
+    _out_of_stock_msg.pop(chat_id, None)
     rows = []
     for at, count, price in available:
         label = f"{at} – មានក្នុងស្តុក {count}"
