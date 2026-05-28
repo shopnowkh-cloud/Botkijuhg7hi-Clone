@@ -2596,44 +2596,30 @@ async def _on_startup(app_: Application):
     global accounts_data, MAINTENANCE_MODE
     global DROPMAIL_API_TOKEN, DROPMAIL_TOKEN_EXPIRY, _DROPMAIL_URL
 
-    # Step 1: init DB tables first (prerequisite for all queries)
     await run_sync(_init_db)
 
-    # Step 2: load all settings + data + sessions in parallel
-    (
-        _sv_maint,
-        _sv_token,
-        _sv_expiry,
-        data,
-        _,
-    ) = await asyncio.gather(
-        run_sync(_get_setting, "MAINTENANCE_MODE"),
-        run_sync(_get_setting, "DROPMAIL_API_TOKEN"),
-        run_sync(_get_setting, "DROPMAIL_TOKEN_EXPIRY"),
-        run_sync(_load_data),
-        run_sync(_load_sessions),
-        return_exceptions=True,
-    )
-
-    if _sv_maint and not isinstance(_sv_maint, Exception):
-        MAINTENANCE_MODE = str(_sv_maint).lower() == "true"
+    _sv = await run_sync(_get_setting, "MAINTENANCE_MODE")
+    if _sv is not None:
+        MAINTENANCE_MODE = str(_sv).lower() == "true"
         logger.info(f"Loaded MAINTENANCE_MODE: {MAINTENANCE_MODE}")
-    if _sv_token and not isinstance(_sv_token, Exception):
-        DROPMAIL_API_TOKEN = _sv_token
+
+    _sv = await run_sync(_get_setting, "DROPMAIL_API_TOKEN")
+    if _sv:
+        DROPMAIL_API_TOKEN = _sv
         _DROPMAIL_URL = f"https://dropmail.me/api/graphql/{DROPMAIL_API_TOKEN}"
         logger.info(f"Loaded DROPMAIL_API_TOKEN from DB: {DROPMAIL_API_TOKEN[:6]}…")
-    if _sv_expiry and not isinstance(_sv_expiry, Exception):
-        DROPMAIL_TOKEN_EXPIRY = _sv_expiry
-        logger.info(f"Loaded DROPMAIL_TOKEN_EXPIRY from DB: {DROPMAIL_TOKEN_EXPIRY}")
-    if isinstance(data, dict):
-        accounts_data.update(data)
 
-    # Step 3: resume deletions + cleanup in parallel
-    await asyncio.gather(
-        _resume_scheduled_deletions(),
-        run_sync(_cleanup_expired_pending_payments),
-        return_exceptions=True,
-    )
+    _sv = await run_sync(_get_setting, "DROPMAIL_TOKEN_EXPIRY")
+    if _sv:
+        DROPMAIL_TOKEN_EXPIRY = _sv
+        logger.info(f"Loaded DROPMAIL_TOKEN_EXPIRY from DB: {DROPMAIL_TOKEN_EXPIRY}")
+
+    data = await run_sync(_load_data)
+    accounts_data.update(data)
+    await run_sync(_load_sessions)
+
+    await _resume_scheduled_deletions()
+    await run_sync(_cleanup_expired_pending_payments)
 
     if not WEBHOOK_MODE:
         asyncio.create_task(_pending_payment_sweeper(60))
