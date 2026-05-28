@@ -845,7 +845,7 @@ def _clear_scheduled_deletion(chat_id, message_id):
 def _generate_payment_qr(amount):
     try:
         resp = http.get(
-            f"{RELAY_API_BASE}?type=generate_qr&user_tg_id={ADMIN_ID}&amount={amount:.2f}",
+            f"{RELAY_API_BASE}?type=generate_qr&user_tg_id={ADMIN_ID}&amount={amount:.2f}&expiry={PAYMENT_TIMEOUT_SECONDS}",
             timeout=15)
         resp.raise_for_status()
         data = resp.json()
@@ -1293,7 +1293,10 @@ async def _start_payment_for_session(chat_id, user_id, session, callback_query=N
     started_at = time.time()
     session["qr_sent_at"] = started_at
 
-    photo_msg = await send_photo(chat_id, img_bytes, reply_markup=CHECK_PAYMENT_INLINE)
+    photo_msg = await send_photo(
+        chat_id, img_bytes,
+        caption=f"⏱ <b>QR Code សុពលភាព {PAYMENT_TIMEOUT_SECONDS // 60} នាទី</b> — នឹងលុបស្វ័យប្រវត្តនៅពេលផុតកំណត់",
+        reply_markup=CHECK_PAYMENT_INLINE)
     if photo_msg:
         session["photo_message_id"] = photo_msg.message_id
         session["qr_message_id"] = photo_msg.message_id
