@@ -1309,6 +1309,7 @@ async def _start_payment_for_session(chat_id, user_id, session, callback_query=N
         session["photo_message_id"] = photo_msg.message_id
         session["qr_message_id"] = photo_msg.message_id
         asyncio.create_task(_schedule_qr_expiry(chat_id, user_id, photo_msg.message_id, md5_hash, started_at))
+        asyncio.create_task(run_sync(_record_scheduled_deletion, chat_id, photo_msg.message_id, PAYMENT_TIMEOUT_SECONDS))
 
     asyncio.create_task(run_sync(_save_sessions))
     asyncio.create_task(run_sync(_save_pending_payment, user_id, chat_id, session))
@@ -1360,6 +1361,7 @@ async def _schedule_qr_expiry(chat_id, user_id, msg_id, md5_hash, started_at):
                     continue
 
                 await delete_msg(chat_id, msg_id)
+                asyncio.create_task(run_sync(_clear_scheduled_deletion, chat_id, msg_id))
                 async with _data_lock:
                     expired_session = None
                     if (user_id in user_sessions
@@ -1393,6 +1395,7 @@ async def deliver_accounts(chat_id, user_id, session, payment_data=None, user_na
         mid = session.get(key)
         if mid:
             asyncio.create_task(delete_msg(chat_id, mid))
+            asyncio.create_task(run_sync(_clear_scheduled_deletion, chat_id, mid))
 
     reserved = session.get("reserved_accounts") or []
     async with _data_lock:
