@@ -1,0 +1,14 @@
+{
+  "version": 2,
+  "functions": {
+    "api/webhook.py": {
+      "runtime": "python3.12",
+      "maxDuration": 60
+    }
+  },
+  "env": {
+    "TELEGRAM_BOT_TOKEN": "@telegram_bot_token",
+    "TURSO_URL": "@turso_url",
+    "TURSO_TOKEN": "@turso_token"
+  }
+}
