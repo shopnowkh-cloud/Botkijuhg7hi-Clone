@@ -190,7 +190,7 @@ import psycopg2
 import psycopg2.extras
 import psycopg2.pool
 
-_DB_URL = os.environ.get("DATABASE_URL_BOT", "")
+_DB_URL = os.environ.get("DATABASE_URL_BOT", "") or os.environ.get("DATABASE_URL", "")
 _db_pool = None
 _db_pool_lock = threading.Lock()
 
