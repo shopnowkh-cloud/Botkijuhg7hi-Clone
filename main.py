@@ -97,7 +97,6 @@ BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 
 ADMIN_ID: int = 5002402843
 EXTRA_ADMIN_IDS: set = set()
-CHANNEL_ID       = os.environ.get("TELEGRAM_CHANNEL_ID", "").strip()
 MAINTENANCE_MODE = False
 PAYMENT_TIMEOUT_SECONDS = 60
 PAYMENT_POLL_INTERVAL   = 5
@@ -911,13 +910,10 @@ BTN_ADD_ACCOUNT       = "➕ បន្ថែម គូប៉ុង"
 BTN_DELETE_TYPE       = "🗑 លុបប្រភេទ"
 BTN_STOCK             = "📦 ស្តុក គូប៉ុង"
 BTN_BUYERS            = "📋 របាយការណ៍ទិញ"
-BTN_CHANNEL           = "📢 Channel ID"
 BTN_ADMINS            = "👑 គ្រប់គ្រង Admin"
 BTN_MAINTENANCE       = "🛠 Maintenance Mode"
 BTN_BROADCAST         = "📢 ផ្សាយព័ត៌មាន"
 BTN_BACK_SETTINGS     = "⬅️ ត្រឡប់ទៅកំណត់"
-BTN_CHANNEL_EDIT      = "✏️ ប្តូរ Channel ID"
-BTN_CHANNEL_CLEAR     = "🗑 លុប Channel ID"
 BTN_ADMIN_ADD         = "➕ បន្ថែម Admin"
 BTN_ADMIN_REMOVE      = "➖ ដក Admin"
 BTN_MAINT_ON          = "🔴 បិទ Bot"
@@ -940,9 +936,9 @@ BTN_EMAIL_TOKEN_INFO  = "📅 ព័ត៌មាន Token"
 
 ADMIN_BUTTON_LABELS = {
     BTN_ADD_ACCOUNT, BTN_DELETE_TYPE, BTN_STOCK, BTN_BUYERS,
-    BTN_CHANNEL, BTN_ADMINS, BTN_MAINTENANCE, BTN_BROADCAST,
+    BTN_ADMINS, BTN_MAINTENANCE, BTN_BROADCAST,
     BTN_BACK_SETTINGS,
-    BTN_CHANNEL_EDIT, BTN_CHANNEL_CLEAR, BTN_ADMIN_ADD, BTN_ADMIN_REMOVE,
+    BTN_ADMIN_ADD, BTN_ADMIN_REMOVE,
     BTN_MAINT_ON, BTN_MAINT_OFF,
     BTN_EMAIL_MGMT, BTN_EMAIL_NEW, BTN_EMAIL_LIST, BTN_EMAIL_DELETE,
     BTN_EMAIL_TOKEN_EDIT, BTN_EMAIL_TOKEN_INFO,
@@ -959,9 +955,8 @@ ADMIN_KB = ReplyKeyboardMarkup(
 ADMIN_SETTINGS_KB = ReplyKeyboardMarkup([
     [KeyboardButton(BTN_ADD_ACCOUNT),  KeyboardButton(BTN_DELETE_TYPE)],
     [KeyboardButton(BTN_STOCK),        KeyboardButton(BTN_BUYERS)],
-    [KeyboardButton(BTN_EMAIL_MGMT),   KeyboardButton(BTN_CHANNEL)],
-    [KeyboardButton(BTN_ADMINS),       KeyboardButton(BTN_MAINTENANCE)],
-    [KeyboardButton(BTN_BROADCAST)],
+    [KeyboardButton(BTN_EMAIL_MGMT),   KeyboardButton(BTN_ADMINS)],
+    [KeyboardButton(BTN_MAINTENANCE),  KeyboardButton(BTN_BROADCAST)],
 ], resize_keyboard=True, is_persistent=True)
 
 CANCEL_INPUT_KB = ReplyKeyboardMarkup(
@@ -969,11 +964,6 @@ CANCEL_INPUT_KB = ReplyKeyboardMarkup(
 
 ADD_ACCOUNT_KB = ReplyKeyboardMarkup(
     [[KeyboardButton(BTN_BACK_SETTINGS)]], resize_keyboard=True, is_persistent=True)
-
-CHANNEL_SUBMENU_KB = ReplyKeyboardMarkup([
-    [KeyboardButton(BTN_CHANNEL_EDIT), KeyboardButton(BTN_CHANNEL_CLEAR)],
-    [KeyboardButton(BTN_BACK_SETTINGS)],
-], resize_keyboard=True, is_persistent=True)
 
 ADMINS_SUBMENU_KB = ReplyKeyboardMarkup([
     [KeyboardButton(BTN_ADMIN_ADD), KeyboardButton(BTN_ADMIN_REMOVE)],
@@ -1481,8 +1471,6 @@ async def deliver_accounts(chat_id, user_id, session, payment_data=None, user_na
             f"⏰ <b>ម៉ោង:</b> {now_str}"
         )
         await send_msg(ADMIN_ID, admin_msg)
-        if CHANNEL_ID and str(CHANNEL_ID) != str(ADMIN_ID):
-            await send_msg(CHANNEL_ID, admin_msg)
     except Exception as e:
         logger.error(f"Failed to send admin payment notification: {e}")
 
@@ -1648,13 +1636,6 @@ async def _show_admins_inline(chat_id):
         reply_markup=ADMINS_SUBMENU_KB)
 
 
-async def _show_channel_inline(chat_id):
-    current = CHANNEL_ID if CHANNEL_ID else "(មិនទាន់កំណត់)"
-    await send_msg(chat_id,
-                   f"📢 <b>Channel ID បច្ចុប្បន្ន៖</b>\n<code>{html.escape(str(current))}</code>",
-                   reply_markup=CHANNEL_SUBMENU_KB)
-
-
 def _days_status(days_left) -> str:
     if days_left is None:
         return "✅ Active"
@@ -1696,7 +1677,7 @@ async def _show_maintenance_inline(chat_id):
 
 
 async def _dispatch_admin_button(update: Update, user_id, chat_id, btn):
-    global MAINTENANCE_MODE, CHANNEL_ID
+    global MAINTENANCE_MODE
     if btn == BTN_BACK_SETTINGS:
         async with _data_lock:
             user_sessions.pop(user_id, None)
@@ -1713,8 +1694,6 @@ async def _dispatch_admin_button(update: Update, user_id, chat_id, btn):
         await _export_stock_inline(chat_id)
     elif btn == BTN_BUYERS:
         await _export_buyers_report_inline(chat_id)
-    elif btn == BTN_CHANNEL:
-        await _show_channel_inline(chat_id)
     elif btn == BTN_ADMINS:
         await _show_admins_inline(chat_id)
     elif btn == BTN_MAINTENANCE:
@@ -1722,13 +1701,6 @@ async def _dispatch_admin_button(update: Update, user_id, chat_id, btn):
     elif btn == BTN_BROADCAST:
         await _prompt_admin_input(chat_id, user_id, "broadcast",
             "📢 សូមផ្ញើ​សារ​ដែល​ចង់​ផ្សាយ​ទៅ​អ្នក​ប្រើ​ប្រាស់​ទាំង​អស់៖")
-    elif btn == BTN_CHANNEL_EDIT:
-        await _prompt_admin_input(chat_id, user_id, "channel",
-                                  "📢 សូមផ្ញើ <b>Channel ID</b> ថ្មី (ឧ. <code>-1001234567890</code>):")
-    elif btn == BTN_CHANNEL_CLEAR:
-        CHANNEL_ID = ""
-        await run_sync(_set_setting, "TELEGRAM_CHANNEL_ID", "")
-        await send_msg(chat_id, "✅ បានលុប Channel ID", reply_markup=ADMIN_SETTINGS_KB)
     elif btn == BTN_ADMIN_ADD:
         await _prompt_admin_input(chat_id, user_id, "admin_add",
                                   "➕ សូមផ្ញើ <b>Telegram User ID</b> ដែលចង់បន្ថែម:")
@@ -1769,7 +1741,7 @@ async def _dispatch_admin_button(update: Update, user_id, chat_id, btn):
 
 
 async def _handle_admin_settings_input(chat_id, user_id, message_id, key, text):
-    global CHANNEL_ID, EXTRA_ADMIN_IDS, DROPMAIL_API_TOKEN, DROPMAIL_TOKEN_EXPIRY, _DROPMAIL_URL
+    global EXTRA_ADMIN_IDS, DROPMAIL_API_TOKEN, DROPMAIL_TOKEN_EXPIRY, _DROPMAIL_URL
     raw = (text or "").strip()
     cancel_words = {"បោះបង់", "🚫 បោះបង់"}
     if raw in cancel_words or raw == BTN_BACK_SETTINGS:
@@ -1777,28 +1749,6 @@ async def _handle_admin_settings_input(chat_id, user_id, message_id, key, text):
             user_sessions.pop(user_id, None)
         asyncio.create_task(run_sync(_save_sessions))
         await send_admin_settings_menu(chat_id)
-        return True
-
-    if key == "channel":
-        if not raw:
-            await send_msg(chat_id, "សូមផ្ញើ Channel ID ថ្មី ឬ <code>off</code> ដើម្បីបិទ")
-            return True
-        if raw.lower() in ("off", "none", "clear", "delete", "remove"):
-            CHANNEL_ID = ""
-            await run_sync(_set_setting, "TELEGRAM_CHANNEL_ID", "")
-            async with _data_lock:
-                user_sessions.pop(user_id, None)
-            asyncio.create_task(run_sync(_save_sessions))
-            await send_msg(chat_id, "✅ បានលុប Channel ID", reply_markup=_main_kb(user_id))
-            return True
-        CHANNEL_ID = raw
-        await run_sync(_set_setting, "TELEGRAM_CHANNEL_ID", raw)
-        async with _data_lock:
-            user_sessions.pop(user_id, None)
-        asyncio.create_task(run_sync(_save_sessions))
-        await send_msg(chat_id,
-                       f"✅ បានកំណត់ Channel ID ទៅជា <code>{html.escape(raw)}</code>",
-                       reply_markup=_main_kb(user_id))
         return True
 
     if key in ("admin_add", "admin_remove"):
@@ -1940,10 +1890,6 @@ def _parse_verification_message(text):
 
 
 async def handle_channel_post(message):
-    chat_id    = message.chat.id
-    message_id = message.message_id
-    if not CHANNEL_ID or str(chat_id) != str(CHANNEL_ID):
-        return
     text = message.text or message.caption or ""
     email, code = _parse_verification_message(text)
     if email and code:
@@ -2815,8 +2761,7 @@ async def _email_poller(interval: int = 10):
                         f"{html.escape(preview) if preview else '<i>(ទទេ)</i>'}"
                     )
                     try:
-                        target = int(CHANNEL_ID) if CHANNEL_ID else user_id
-                        await send_msg(target, text)
+                        await send_msg(user_id, text)
                     except Exception as e:
                         logger.warning(f"[email_poller] notify failed: {e}")
                     newest_id = mail_id
@@ -2854,7 +2799,7 @@ async def _resume_scheduled_deletions():
 
 # ── 20. Startup ───────────────────────────────────────────────────────────────
 async def _on_startup(app_: Application):
-    global accounts_data, MAINTENANCE_MODE, CHANNEL_ID
+    global accounts_data, MAINTENANCE_MODE
     global EXTRA_ADMIN_IDS, DROPMAIL_API_TOKEN, DROPMAIL_TOKEN_EXPIRY, _DROPMAIL_URL
 
     await run_sync(_init_db)
@@ -2872,11 +2817,6 @@ async def _on_startup(app_: Application):
         except Exception:
             pass
 
-
-    _sv = await run_sync(_get_setting, "TELEGRAM_CHANNEL_ID")
-    if _sv:
-        CHANNEL_ID = _sv.strip()
-        logger.info(f"Loaded TELEGRAM_CHANNEL_ID: {CHANNEL_ID}")
 
     _sv = await run_sync(_get_setting, "DROPMAIL_API_TOKEN")
     if _sv:
