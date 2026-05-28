@@ -910,7 +910,6 @@ user_sessions: dict = {}
 BTN_ADD_ACCOUNT       = "➕ បន្ថែម គូប៉ុង"
 BTN_DELETE_TYPE       = "🗑 លុបប្រភេទ"
 BTN_STOCK             = "📦 ស្តុក គូប៉ុង"
-BTN_BUYERS            = "📋 របាយការណ៍ទិញ"
 BTN_MAINTENANCE       = "🛠 Maintenance Mode"
 BTN_BACK_SETTINGS     = "⬅️ ត្រឡប់ទៅកំណត់"
 BTN_MAINT_ON          = "🔴 បិទ Bot"
@@ -928,7 +927,7 @@ BTN_EMAIL_TOKEN_INFO  = "📅 ព័ត៌មាន Token"
 
 
 ADMIN_BUTTON_LABELS = {
-    BTN_ADD_ACCOUNT, BTN_DELETE_TYPE, BTN_STOCK, BTN_BUYERS,
+    BTN_ADD_ACCOUNT, BTN_DELETE_TYPE, BTN_STOCK,
     BTN_MAINTENANCE, BTN_BACK_SETTINGS,
     BTN_MAINT_ON, BTN_MAINT_OFF,
     BTN_EMAIL_MGMT, BTN_EMAIL_NEW, BTN_EMAIL_LIST, BTN_EMAIL_DELETE,
@@ -942,7 +941,7 @@ MAIN_KB = ReplyKeyboardMarkup(
 
 ADMIN_SETTINGS_KB = ReplyKeyboardMarkup([
     [KeyboardButton(BTN_ADD_ACCOUNT),  KeyboardButton(BTN_DELETE_TYPE)],
-    [KeyboardButton(BTN_STOCK),        KeyboardButton(BTN_BUYERS)],
+    [KeyboardButton(BTN_STOCK)],
     [KeyboardButton(BTN_EMAIL_MGMT),   KeyboardButton(BTN_MAINTENANCE)],
 ], resize_keyboard=True, is_persistent=True)
 
@@ -1487,71 +1486,6 @@ async def _show_delete_type_menu_inline(chat_id, user_id):
                    reply_markup=ReplyKeyboardMarkup(rows_kb, resize_keyboard=True, is_persistent=True))
 
 
-async def _export_buyers_report_inline(chat_id):
-    try:
-        r = await run_sync(_db_query, """
-            SELECT ph.user_id,ph.account_type,ph.quantity,ph.total_price,
-                   ph.accounts,ph.purchased_at,ku.first_name,ku.last_name,ku.username
-            FROM bot_purchase_history ph
-            LEFT JOIN bot_known_users ku ON ku.user_id=ph.user_id
-            ORDER BY ph.user_id,ph.purchased_at DESC
-        """)
-        rows = r.get("rows", []) or []
-        if not rows:
-            await send_msg(chat_id, "មិនមានទិន្នន័យ​ទិញ​នៅឡើយ​ទេ។")
-            return
-        grouped = {}
-        for row in rows:
-            uid = str(row.get("user_id"))
-            grouped.setdefault(uid, {"first_name": row.get("first_name") or "",
-                                     "last_name": row.get("last_name") or "",
-                                     "username": row.get("username") or "", "purchases": []})
-            accs = row.get("accounts") or []
-            if isinstance(accs, str):
-                try:
-                    accs = json.loads(accs)
-                except Exception:
-                    accs = []
-            emails = [str(a.get("email", "")) for a in accs if isinstance(a, dict) and a.get("email")]
-            grouped[uid]["purchases"].append({"type": row.get("account_type") or "",
-                                              "qty": row.get("quantity") or 0,
-                                              "price": row.get("total_price") or 0,
-                                              "when": str(row.get("purchased_at") or ""),
-                                              "emails": emails})
-        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-        total_emails = 0
-        W = 60
-        lines = [
-            "=" * W, "  BUYERS REPORT".center(W),
-            f"  {now_str}".center(W), "=" * W,
-            f"  Total buyers : {len(grouped)}",
-        ]
-        for uid, info in grouped.items():
-            fn = (info["first_name"] + " " + info["last_name"]).strip() or "(no name)"
-            un = f"@{info['username']}" if info["username"] else "—"
-            lines += ["", "─" * W,
-                      f"  ID       : {uid}", f"  Name     : {fn}",
-                      f"  Username : {un}", f"  Purchases: {len(info['purchases'])}", "─" * W]
-            for i, p in enumerate(info["purchases"], 1):
-                when = p["when"][:19] if len(p["when"]) >= 19 else p["when"]
-                lines += [f"  [{i}] {p['type']}", f"      Qty   : {p['qty']}",
-                          f"      Price : ${p['price']}", f"      Date  : {when}", f"      Emails:"]
-                for em in p["emails"]:
-                    lines.append(f"        • {em}")
-                    total_emails += 1
-                if not p["emails"]:
-                    lines.append("        (none)")
-        lines += ["", "=" * W,
-                  f"  Total emails delivered : {total_emails}".ljust(W - 2), "=" * W]
-        fname = f"buyers_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.txt"
-        await send_document(chat_id, "\n".join(lines).encode("utf-8"), fname,
-                            caption=f"📋 របាយការណ៍ទិញ — {len(grouped)} អ្នក​ទិញ, {total_emails} email")
-        await send_admin_settings_menu(chat_id)
-    except Exception as e:
-        logger.error(f"buyers export failed: {e}")
-        await send_msg(chat_id, f"❌ Error: <code>{html.escape(str(e))}</code>")
-
-
 async def _export_stock_inline(chat_id):
     try:
         async with _data_lock:
@@ -1668,8 +1602,6 @@ async def _dispatch_admin_button(update: Update, user_id, chat_id, btn):
         await _show_delete_type_menu_inline(chat_id, user_id)
     elif btn == BTN_STOCK:
         await _export_stock_inline(chat_id)
-    elif btn == BTN_BUYERS:
-        await _export_buyers_report_inline(chat_id)
     elif btn == BTN_MAINTENANCE:
         await _show_maintenance_inline(chat_id)
     elif btn == BTN_MAINT_ON:
