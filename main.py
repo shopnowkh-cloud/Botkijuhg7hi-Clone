@@ -98,7 +98,6 @@ BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 ADMIN_ID: int = 5002402843
 EXTRA_ADMIN_IDS: set = set()
 CHANNEL_ID       = os.environ.get("TELEGRAM_CHANNEL_ID", "").strip()
-PAYMENT_NAME     = "RADY"
 MAINTENANCE_MODE = False
 PAYMENT_TIMEOUT_SECONDS = 60
 PAYMENT_POLL_INTERVAL   = 5
@@ -912,14 +911,12 @@ BTN_ADD_ACCOUNT       = "➕ បន្ថែម គូប៉ុង"
 BTN_DELETE_TYPE       = "🗑 លុបប្រភេទ"
 BTN_STOCK             = "📦 ស្តុក គូប៉ុង"
 BTN_BUYERS            = "📋 របាយការណ៍ទិញ"
-BTN_PAYMENT           = "💳 ឈ្មោះ Payment"
 BTN_BAKONG            = "🔑 Bakong Token"
 BTN_CHANNEL           = "📢 Channel ID"
 BTN_ADMINS            = "👑 គ្រប់គ្រង Admin"
 BTN_MAINTENANCE       = "🛠 Maintenance Mode"
 BTN_BROADCAST         = "📢 ផ្សាយព័ត៌មាន"
 BTN_BACK_SETTINGS     = "⬅️ ត្រឡប់ទៅកំណត់"
-BTN_PAYMENT_EDIT      = "✏️ ប្តូរឈ្មោះ Payment"
 BTN_BAKONG_API_EDIT   = "✏️ ប្តូរ Bakong Token"
 BTN_BAKONG_TOKEN_INFO = "📅 ព័ត៌មាន Token"
 BTN_CHANNEL_EDIT      = "✏️ ប្តូរ Channel ID"
@@ -946,8 +943,8 @@ BTN_EMAIL_TOKEN_INFO  = "📅 ព័ត៌មាន Token"
 
 ADMIN_BUTTON_LABELS = {
     BTN_ADD_ACCOUNT, BTN_DELETE_TYPE, BTN_STOCK, BTN_BUYERS,
-    BTN_PAYMENT, BTN_BAKONG, BTN_CHANNEL, BTN_ADMINS, BTN_MAINTENANCE, BTN_BROADCAST,
-    BTN_BACK_SETTINGS, BTN_PAYMENT_EDIT, BTN_BAKONG_API_EDIT, BTN_BAKONG_TOKEN_INFO,
+    BTN_BAKONG, BTN_CHANNEL, BTN_ADMINS, BTN_MAINTENANCE, BTN_BROADCAST,
+    BTN_BACK_SETTINGS, BTN_BAKONG_API_EDIT, BTN_BAKONG_TOKEN_INFO,
     BTN_CHANNEL_EDIT, BTN_CHANNEL_CLEAR, BTN_ADMIN_ADD, BTN_ADMIN_REMOVE,
     BTN_MAINT_ON, BTN_MAINT_OFF,
     BTN_EMAIL_MGMT, BTN_EMAIL_NEW, BTN_EMAIL_LIST, BTN_EMAIL_DELETE,
@@ -965,10 +962,9 @@ ADMIN_KB = ReplyKeyboardMarkup(
 ADMIN_SETTINGS_KB = ReplyKeyboardMarkup([
     [KeyboardButton(BTN_ADD_ACCOUNT),  KeyboardButton(BTN_DELETE_TYPE)],
     [KeyboardButton(BTN_STOCK),        KeyboardButton(BTN_BUYERS)],
-    [KeyboardButton(BTN_EMAIL_MGMT),   KeyboardButton(BTN_PAYMENT)],
-    [KeyboardButton(BTN_BAKONG),       KeyboardButton(BTN_CHANNEL)],
-    [KeyboardButton(BTN_ADMINS),       KeyboardButton(BTN_MAINTENANCE)],
-    [KeyboardButton(BTN_BROADCAST)],
+    [KeyboardButton(BTN_EMAIL_MGMT),   KeyboardButton(BTN_BAKONG)],
+    [KeyboardButton(BTN_CHANNEL),      KeyboardButton(BTN_ADMINS)],
+    [KeyboardButton(BTN_MAINTENANCE),  KeyboardButton(BTN_BROADCAST)],
 ], resize_keyboard=True, is_persistent=True)
 
 CANCEL_INPUT_KB = ReplyKeyboardMarkup(
@@ -976,10 +972,6 @@ CANCEL_INPUT_KB = ReplyKeyboardMarkup(
 
 ADD_ACCOUNT_KB = ReplyKeyboardMarkup(
     [[KeyboardButton(BTN_BACK_SETTINGS)]], resize_keyboard=True, is_persistent=True)
-
-PAYMENT_SUBMENU_KB = ReplyKeyboardMarkup(
-    [[KeyboardButton(BTN_PAYMENT_EDIT)], [KeyboardButton(BTN_BACK_SETTINGS)]],
-    resize_keyboard=True, is_persistent=True)
 
 BAKONG_SUBMENU_KB = ReplyKeyboardMarkup([
     [KeyboardButton(BTN_BAKONG_API_EDIT), KeyboardButton(BTN_BAKONG_TOKEN_INFO)],
@@ -1671,12 +1663,6 @@ async def _show_channel_inline(chat_id):
                    reply_markup=CHANNEL_SUBMENU_KB)
 
 
-async def _show_payment_inline(chat_id):
-    await send_msg(chat_id,
-                   f"💳 <b>ឈ្មោះ Payment បច្ចុប្បន្ន៖</b>\n<code>{html.escape(PAYMENT_NAME or '(មិនទាន់កំណត់)')}</code>",
-                   reply_markup=PAYMENT_SUBMENU_KB)
-
-
 async def _show_bakong_inline(chat_id):
     await send_msg(
         chat_id,
@@ -1771,8 +1757,6 @@ async def _dispatch_admin_button(update: Update, user_id, chat_id, btn):
         await _export_stock_inline(chat_id)
     elif btn == BTN_BUYERS:
         await _export_buyers_report_inline(chat_id)
-    elif btn == BTN_PAYMENT:
-        await _show_payment_inline(chat_id)
     elif btn == BTN_BAKONG:
         await _show_bakong_inline(chat_id)
     elif btn == BTN_BAKONG_TOKEN_INFO:
@@ -1786,9 +1770,6 @@ async def _dispatch_admin_button(update: Update, user_id, chat_id, btn):
     elif btn == BTN_BROADCAST:
         await _prompt_admin_input(chat_id, user_id, "broadcast",
             "📢 សូមផ្ញើ​សារ​ដែល​ចង់​ផ្សាយ​ទៅ​អ្នក​ប្រើ​ប្រាស់​ទាំង​អស់៖")
-    elif btn == BTN_PAYMENT_EDIT:
-        await _prompt_admin_input(chat_id, user_id, "payment",
-                                  "💳 សូមផ្ញើ <b>ឈ្មោះ Payment</b> ថ្មី:")
     elif btn == BTN_BAKONG_API_EDIT:
         await _prompt_admin_input(chat_id, user_id, "bakong_api",
                                   "🔑 សូមផ្ញើ <b>Bakong Token</b> ថ្មី:")
@@ -1839,7 +1820,7 @@ async def _dispatch_admin_button(update: Update, user_id, chat_id, btn):
 
 
 async def _handle_admin_settings_input(chat_id, user_id, message_id, key, text):
-    global PAYMENT_NAME, CHANNEL_ID, EXTRA_ADMIN_IDS, DROPMAIL_API_TOKEN, DROPMAIL_TOKEN_EXPIRY, _DROPMAIL_URL
+    global CHANNEL_ID, EXTRA_ADMIN_IDS, DROPMAIL_API_TOKEN, DROPMAIL_TOKEN_EXPIRY, _DROPMAIL_URL
     raw = (text or "").strip()
     cancel_words = {"បោះបង់", "🚫 បោះបង់"}
     if raw in cancel_words or raw == BTN_BACK_SETTINGS:
@@ -1847,20 +1828,6 @@ async def _handle_admin_settings_input(chat_id, user_id, message_id, key, text):
             user_sessions.pop(user_id, None)
         asyncio.create_task(run_sync(_save_sessions))
         await send_admin_settings_menu(chat_id)
-        return True
-
-    if key == "payment":
-        if not raw:
-            await send_msg(chat_id, "សូមផ្ញើឈ្មោះ Payment ថ្មី (ឬចុច 🚫 បោះបង់)")
-            return True
-        PAYMENT_NAME = raw
-        await run_sync(_set_setting, "PAYMENT_NAME", PAYMENT_NAME)
-        async with _data_lock:
-            user_sessions.pop(user_id, None)
-        asyncio.create_task(run_sync(_save_sessions))
-        await send_msg(chat_id,
-                       f"✅ បានប្តូរឈ្មោះ Payment ទៅជា <b>{html.escape(PAYMENT_NAME)}</b>",
-                       reply_markup=_main_kb(user_id))
         return True
 
     if key in ("bakong", "bakong_api"):
@@ -2951,15 +2918,10 @@ async def _resume_scheduled_deletions():
 
 # ── 20. Startup ───────────────────────────────────────────────────────────────
 async def _on_startup(app_: Application):
-    global accounts_data, PAYMENT_NAME, MAINTENANCE_MODE, CHANNEL_ID
+    global accounts_data, MAINTENANCE_MODE, CHANNEL_ID
     global EXTRA_ADMIN_IDS, DROPMAIL_API_TOKEN, DROPMAIL_TOKEN_EXPIRY, _DROPMAIL_URL
 
     await run_sync(_init_db)
-
-    _sv = await run_sync(_get_setting, "PAYMENT_NAME")
-    if _sv:
-        PAYMENT_NAME = _sv
-        logger.info(f"Loaded PAYMENT_NAME from DB: {PAYMENT_NAME}")
 
     _sv = await run_sync(_get_setting, "MAINTENANCE_MODE")
     if _sv is not None:
