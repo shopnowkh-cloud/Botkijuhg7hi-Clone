@@ -916,8 +916,6 @@ BTN_MAINT_OFF         = "🟢 បើក Bot"
 BTN_CANCEL_INPUT      = "🚫 បោះបង់"
 BTN_DELETE_CONFIRM    = "✅ បញ្ជាក់លុប"
 BTN_DELETE_CANCEL     = "🚫 បោះបង់ការលុប"
-ADMIN_SETTINGS_BTN    = "⚙️កំណត់"
-
 BTN_EMAIL_MGMT        = "📧 អ៊ីម៉ែល"
 BTN_EMAIL_NEW         = "✉️ អ៊ីម៉ែលថ្មី"
 BTN_EMAIL_INBOX       = "📥 ពិនិត្យប្រអប់"
@@ -939,9 +937,6 @@ MAIN_KB = ReplyKeyboardMarkup(
     [[KeyboardButton("💵 ទិញគូប៉ុង")]],
     resize_keyboard=True, is_persistent=True)
 
-ADMIN_KB = ReplyKeyboardMarkup(
-    [[KeyboardButton(ADMIN_SETTINGS_BTN)]],
-    resize_keyboard=True, is_persistent=True)
 
 ADMIN_SETTINGS_KB = ReplyKeyboardMarkup([
     [KeyboardButton(BTN_ADD_ACCOUNT),  KeyboardButton(BTN_DELETE_TYPE)],
@@ -977,7 +972,7 @@ CHECK_PAYMENT_INLINE = InlineKeyboardMarkup([
 
 
 def _main_kb(uid):
-    return ADMIN_KB if is_admin(uid) else ReplyKeyboardRemove()
+    return ReplyKeyboardRemove()
 
 
 def _type_callback_id(account_type: str) -> str:
@@ -1930,6 +1925,19 @@ async def on_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_channel_post(update.channel_post)
 
 
+async def on_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    if not is_admin(user_id):
+        return
+    async with _data_lock:
+        sess = user_sessions.get(user_id, {})
+        if str(sess.get("state", "")).startswith("admin_input:"):
+            user_sessions.pop(user_id, None)
+    asyncio.create_task(run_sync(_save_sessions))
+    await send_admin_settings_menu(chat_id)
+
+
 async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat_id = update.effective_chat.id
@@ -1977,16 +1985,6 @@ async def on_private_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
         asyncio.create_task(run_sync(_upsert_known_user, user_id, user.first_name, user.last_name, user.username))
 
     btn = text.strip()
-
-    # Admin settings button shortcut
-    if is_admin(user_id) and btn == ADMIN_SETTINGS_BTN:
-        async with _data_lock:
-            sess = user_sessions.get(user_id, {})
-            if str(sess.get("state", "")).startswith("admin_input:"):
-                user_sessions.pop(user_id, None)
-        asyncio.create_task(run_sync(_save_sessions))
-        await send_admin_settings_menu(chat_id)
-        return
 
     # Admin pending input session
     if is_admin(user_id):
@@ -2691,7 +2689,9 @@ def _register_handlers():
     application.add_handler(
         CommandHandler("start",  on_start,  filters=ptb_filters.ChatType.PRIVATE), group=0)
     application.add_handler(
-        CommandHandler("cancel", on_cancel, filters=ptb_filters.ChatType.PRIVATE), group=0)
+        CommandHandler("cancel",   on_cancel,   filters=ptb_filters.ChatType.PRIVATE), group=0)
+    application.add_handler(
+        CommandHandler("settings", on_settings, filters=ptb_filters.ChatType.PRIVATE), group=0)
     application.add_handler(
         MessageHandler(ptb_filters.ChatType.PRIVATE & ptb_filters.TEXT, on_private_message), group=1)
     application.add_handler(
