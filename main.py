@@ -911,14 +911,11 @@ BTN_ADD_ACCOUNT       = "➕ បន្ថែម គូប៉ុង"
 BTN_DELETE_TYPE       = "🗑 លុបប្រភេទ"
 BTN_STOCK             = "📦 ស្តុក គូប៉ុង"
 BTN_BUYERS            = "📋 របាយការណ៍ទិញ"
-BTN_BAKONG            = "🔑 Bakong Token"
 BTN_CHANNEL           = "📢 Channel ID"
 BTN_ADMINS            = "👑 គ្រប់គ្រង Admin"
 BTN_MAINTENANCE       = "🛠 Maintenance Mode"
 BTN_BROADCAST         = "📢 ផ្សាយព័ត៌មាន"
 BTN_BACK_SETTINGS     = "⬅️ ត្រឡប់ទៅកំណត់"
-BTN_BAKONG_API_EDIT   = "✏️ ប្តូរ Bakong Token"
-BTN_BAKONG_TOKEN_INFO = "📅 ព័ត៌មាន Token"
 BTN_CHANNEL_EDIT      = "✏️ ប្តូរ Channel ID"
 BTN_CHANNEL_CLEAR     = "🗑 លុប Channel ID"
 BTN_ADMIN_ADD         = "➕ បន្ថែម Admin"
@@ -943,8 +940,8 @@ BTN_EMAIL_TOKEN_INFO  = "📅 ព័ត៌មាន Token"
 
 ADMIN_BUTTON_LABELS = {
     BTN_ADD_ACCOUNT, BTN_DELETE_TYPE, BTN_STOCK, BTN_BUYERS,
-    BTN_BAKONG, BTN_CHANNEL, BTN_ADMINS, BTN_MAINTENANCE, BTN_BROADCAST,
-    BTN_BACK_SETTINGS, BTN_BAKONG_API_EDIT, BTN_BAKONG_TOKEN_INFO,
+    BTN_CHANNEL, BTN_ADMINS, BTN_MAINTENANCE, BTN_BROADCAST,
+    BTN_BACK_SETTINGS,
     BTN_CHANNEL_EDIT, BTN_CHANNEL_CLEAR, BTN_ADMIN_ADD, BTN_ADMIN_REMOVE,
     BTN_MAINT_ON, BTN_MAINT_OFF,
     BTN_EMAIL_MGMT, BTN_EMAIL_NEW, BTN_EMAIL_LIST, BTN_EMAIL_DELETE,
@@ -962,9 +959,9 @@ ADMIN_KB = ReplyKeyboardMarkup(
 ADMIN_SETTINGS_KB = ReplyKeyboardMarkup([
     [KeyboardButton(BTN_ADD_ACCOUNT),  KeyboardButton(BTN_DELETE_TYPE)],
     [KeyboardButton(BTN_STOCK),        KeyboardButton(BTN_BUYERS)],
-    [KeyboardButton(BTN_EMAIL_MGMT),   KeyboardButton(BTN_BAKONG)],
-    [KeyboardButton(BTN_CHANNEL),      KeyboardButton(BTN_ADMINS)],
-    [KeyboardButton(BTN_MAINTENANCE),  KeyboardButton(BTN_BROADCAST)],
+    [KeyboardButton(BTN_EMAIL_MGMT),   KeyboardButton(BTN_CHANNEL)],
+    [KeyboardButton(BTN_ADMINS),       KeyboardButton(BTN_MAINTENANCE)],
+    [KeyboardButton(BTN_BROADCAST)],
 ], resize_keyboard=True, is_persistent=True)
 
 CANCEL_INPUT_KB = ReplyKeyboardMarkup(
@@ -972,11 +969,6 @@ CANCEL_INPUT_KB = ReplyKeyboardMarkup(
 
 ADD_ACCOUNT_KB = ReplyKeyboardMarkup(
     [[KeyboardButton(BTN_BACK_SETTINGS)]], resize_keyboard=True, is_persistent=True)
-
-BAKONG_SUBMENU_KB = ReplyKeyboardMarkup([
-    [KeyboardButton(BTN_BAKONG_API_EDIT), KeyboardButton(BTN_BAKONG_TOKEN_INFO)],
-    [KeyboardButton(BTN_BACK_SETTINGS)],
-], resize_keyboard=True, is_persistent=True)
 
 CHANNEL_SUBMENU_KB = ReplyKeyboardMarkup([
     [KeyboardButton(BTN_CHANNEL_EDIT), KeyboardButton(BTN_CHANNEL_CLEAR)],
@@ -1663,36 +1655,6 @@ async def _show_channel_inline(chat_id):
                    reply_markup=CHANNEL_SUBMENU_KB)
 
 
-async def _show_bakong_inline(chat_id):
-    await send_msg(
-        chat_id,
-        f"🔑 <b>Bakong Payment Relay:</b>\n\n"
-        f"<code>{html.escape(RELAY_API_BASE)}</code>\n"
-        f"✅ ប្រើ Relay API (cambo-kh.com)",
-        reply_markup=BAKONG_SUBMENU_KB)
-
-
-def _decode_jwt_expiry(token: str):
-    import base64
-    try:
-        parts = token.split(".")
-        if len(parts) != 3:
-            return None, None
-        payload_b64 = parts[1]
-        padding = 4 - len(payload_b64) % 4
-        if padding != 4:
-            payload_b64 += "=" * padding
-        payload = json.loads(base64.urlsafe_b64decode(payload_b64).decode("utf-8"))
-        exp = payload.get("exp")
-        if not exp:
-            return None, None
-        exp_dt = datetime.fromtimestamp(exp, tz=timezone.utc)
-        days_left = (exp_dt - datetime.now(tz=timezone.utc)).days
-        return exp_dt, days_left
-    except Exception:
-        return None, None
-
-
 def _days_status(days_left) -> str:
     if days_left is None:
         return "✅ Active"
@@ -1707,9 +1669,7 @@ def _days_status(days_left) -> str:
 
 async def _send_combined_token_info(chat_id: int, reply_markup) -> None:
     lines = ["🔑 <b>Token Info</b>\n"]
-    lines.append("━━━ 🏦 Bakong ━━━")
-    lines.append("✅ ប្រើ Relay API (cambo-kh.com)")
-    lines.append("\n━━━ 📧 Dropmail ━━━")
+    lines.append("━━━ 📧 Dropmail ━━━")
     if not DROPMAIL_API_TOKEN:
         lines.append("❌ មិនទាន់មាន Dropmail Token ទេ។")
     else:
@@ -1727,10 +1687,6 @@ async def _send_combined_token_info(chat_id: int, reply_markup) -> None:
         else:
             lines.append("📅 Expire: <b>មិន​ទាន់​កំណត់</b> — ចុច ✏️ ប្តូរ Token ដើម្បីកំណត់")
     await send_msg(chat_id, "\n".join(lines), reply_markup=reply_markup)
-
-
-async def _bakong_show_token_info(chat_id: int):
-    await _send_combined_token_info(chat_id, BAKONG_SUBMENU_KB)
 
 
 async def _show_maintenance_inline(chat_id):
@@ -1757,10 +1713,6 @@ async def _dispatch_admin_button(update: Update, user_id, chat_id, btn):
         await _export_stock_inline(chat_id)
     elif btn == BTN_BUYERS:
         await _export_buyers_report_inline(chat_id)
-    elif btn == BTN_BAKONG:
-        await _show_bakong_inline(chat_id)
-    elif btn == BTN_BAKONG_TOKEN_INFO:
-        await _bakong_show_token_info(chat_id)
     elif btn == BTN_CHANNEL:
         await _show_channel_inline(chat_id)
     elif btn == BTN_ADMINS:
@@ -1770,9 +1722,6 @@ async def _dispatch_admin_button(update: Update, user_id, chat_id, btn):
     elif btn == BTN_BROADCAST:
         await _prompt_admin_input(chat_id, user_id, "broadcast",
             "📢 សូមផ្ញើ​សារ​ដែល​ចង់​ផ្សាយ​ទៅ​អ្នក​ប្រើ​ប្រាស់​ទាំង​អស់៖")
-    elif btn == BTN_BAKONG_API_EDIT:
-        await _prompt_admin_input(chat_id, user_id, "bakong_api",
-                                  "🔑 សូមផ្ញើ <b>Bakong Token</b> ថ្មី:")
     elif btn == BTN_CHANNEL_EDIT:
         await _prompt_admin_input(chat_id, user_id, "channel",
                                   "📢 សូមផ្ញើ <b>Channel ID</b> ថ្មី (ឧ. <code>-1001234567890</code>):")
@@ -1828,19 +1777,6 @@ async def _handle_admin_settings_input(chat_id, user_id, message_id, key, text):
             user_sessions.pop(user_id, None)
         asyncio.create_task(run_sync(_save_sessions))
         await send_admin_settings_menu(chat_id)
-        return True
-
-    if key in ("bakong", "bakong_api"):
-        if not raw:
-            await send_msg(chat_id, "សូមផ្ញើ Bakong token ថ្មី (ឬចុច 🚫 បោះបង់)")
-            return True
-        asyncio.create_task(delete_msg(chat_id, message_id))
-        async with _data_lock:
-            user_sessions.pop(user_id, None)
-        asyncio.create_task(run_sync(_save_sessions))
-        await send_msg(chat_id,
-                       f"✅ បានប្តូរ <b>{label}</b> (Prefix: <code>{html.escape(raw[:10])}…</code>)",
-                       reply_markup=_main_kb(user_id))
         return True
 
     if key == "channel":
