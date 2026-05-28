@@ -2060,6 +2060,8 @@ async def on_private_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
             async with get_user_lock(user_id):
                 await _handle_admin_session_message(update, user_id, chat_id, message_id, text)
             return
+        if text.strip().startswith("/"):
+            return
         await show_account_selection(chat_id)
         return
 
