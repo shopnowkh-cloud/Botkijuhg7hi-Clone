@@ -1,0 +1,22 @@
+{
+  "bot_accounts": [
+    {
+      "id": 1,
+      "data": "{\"accounts\": [{\"email\": \"Hft0@0&ugg.com\"}], \"account_types\": {\"7\": [{\"email\": \"Hft0@0&ugg.com\"}]}, \"prices\": {\"7\": 7.0}}"
+    }
+  ],
+  "bot_sessions": [
+    {
+      "id": 1,
+      "data": "{\"5002402843\": {\"state\": \"waiting_for_quantity\", \"account_type\": \"7\", \"price\": 7.0, \"available_count\": 1, \"started_at\": 1779909268.8956735}}"
+    }
+  ],
+  "bot_pending_payments": [],
+  "bot_purchase_history": [],
+  "bot_known_users": [],
+  "bot_sent_verifications": [],
+  "bot_settings": [],
+  "bot_scheduled_deletions": [],
+  "bot_email_buyer_map": [],
+  "email_history": []
+}

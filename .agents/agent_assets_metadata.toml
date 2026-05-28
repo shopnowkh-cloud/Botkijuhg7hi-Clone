@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "VSUSnnh3XfWTU2S-i_x4b"
+uri = "file://Telegram-Bot/backup_data.json"
+type = "unspecified"
+title = "backup_data.json — Turso data export"
