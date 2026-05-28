@@ -50,3 +50,7 @@ externalPort = 3000
 [userenv]
 
 [userenv.shared]
+
+[nix]
+channel = "stable-25_05"
+packages = ["freetype", "lcms2", "libimagequant", "libjpeg", "libtiff", "libwebp", "libxcrypt", "openjpeg", "tcl", "tk", "zlib"]

@@ -7,3 +7,13 @@ python-telegram-bot[job-queue]>=20.0
 qrcode>=8.2
 requests>=2.32.4
 urllib3>=2.5.0
+aiohttp
+bakong-khqr
+pillow
+psycopg2-binary
+python-dotenv
+python-telegram-bot[job-queue]
+qrcode
+requests
+telegram
+urllib3
