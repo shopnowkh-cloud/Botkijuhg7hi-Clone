@@ -2258,7 +2258,6 @@ async def _handle_callback_locked(cq, user, user_id, chat_id, data):
             rows_inline.append([InlineKeyboardButton("🚫 បោះបង់", callback_data="cancel_buy")])
             await send_msg(chat_id, "<b>សូមជ្រើសរើសចំនួនដែលចង់ទិញ៖</b>",
                            reply_markup=InlineKeyboardMarkup(rows_inline))
-            asyncio.create_task(delete_msg(chat_id, cq.message.message_id))
             return
 
         if data.startswith("out_of_stock"):
