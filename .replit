@@ -29,7 +29,7 @@ outputType = "console"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "cd Telegram-Bot && python3.11 telegram_bot_simple.py"
+args = "python3.11 main.py"
 
 [agent]
 stack = "BEST_EFFORT_FALLBACK"
