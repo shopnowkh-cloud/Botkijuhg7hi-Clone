@@ -98,7 +98,7 @@ BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 ADMIN_ID: int = 5002402843
 MAINTENANCE_MODE = False
 PAYMENT_TIMEOUT_SECONDS = 60
-PAYMENT_POLL_INTERVAL   = 5
+PAYMENT_POLL_INTERVAL   = 10
 KHMER_MESSAGE = "ជ្រើសរើស គូប៉ុង ដើម្បីបញ្ជាទិញ"
 
 RELAY_API_BASE = "https://bakong.cambo-kh.com/api/payment"
@@ -1302,7 +1302,7 @@ async def _start_payment_for_session(chat_id, user_id, session, callback_query=N
 
     photo_msg = await send_photo(
         chat_id, img_bytes,
-        caption=f"⏱ <b>QR Code សុពលភាព {PAYMENT_TIMEOUT_SECONDS // 60} នាទី</b> — នឹងលុបស្វ័យប្រវត្តនៅពេលផុតកំណត់",
+        caption=f"សូមធ្វើការ scan khqr សុពលភាព {PAYMENT_TIMEOUT_SECONDS // 60}នាទីប៉ុណ្ណោះ\n💬យើងនឹងធ្វើការផ្ទៀងផ្ទាត់ចំនួន {PAYMENT_TIMEOUT_SECONDS // PAYMENT_POLL_INTERVAL}ដង",
         reply_markup=CHECK_PAYMENT_INLINE)
     if photo_msg:
         session["photo_message_id"] = photo_msg.message_id
