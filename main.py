@@ -843,19 +843,6 @@ def _clear_scheduled_deletion(chat_id, message_id):
         logger.error(f"Failed to clear scheduled deletion: {e}")
 
 
-def _is_admin_notified(uid: int) -> bool:
-    if uid in _notified_users:
-        return True
-    try:
-        r = _db_query("SELECT admin_notified FROM bot_known_users WHERE user_id=%s", [uid])
-        rows = r.get("rows", [])
-        if rows and rows[0].get("admin_notified"):
-            _notified_users.add(uid)
-            return True
-    except Exception:
-        pass
-    return False
-
 
 # ── 9. KHQR / Payment helpers ──────────────────────────────────────────────────
 def _generate_payment_qr(amount):
@@ -919,13 +906,11 @@ def _check_payment_status(md5):
 # ── 10. Global state ──────────────────────────────────────────────────────────
 accounts_data: dict = {}
 user_sessions: dict = {}
-_notified_users: set = set()
 
 # ── 11. Keyboard builders ─────────────────────────────────────────────────────
 BTN_ADD_ACCOUNT       = "➕ បន្ថែម គូប៉ុង"
 BTN_DELETE_TYPE       = "🗑 លុបប្រភេទ"
 BTN_STOCK             = "📦 ស្តុក គូប៉ុង"
-BTN_USERS             = "👥 អ្នកប្រើប្រាស់"
 BTN_BUYERS            = "📋 របាយការណ៍ទិញ"
 BTN_PAYMENT           = "💳 ឈ្មោះ Payment"
 BTN_BAKONG            = "🔑 Bakong Token"
@@ -960,7 +945,7 @@ BTN_EMAIL_TOKEN_INFO  = "📅 ព័ត៌មាន Token"
 
 
 ADMIN_BUTTON_LABELS = {
-    BTN_ADD_ACCOUNT, BTN_DELETE_TYPE, BTN_STOCK, BTN_USERS, BTN_BUYERS,
+    BTN_ADD_ACCOUNT, BTN_DELETE_TYPE, BTN_STOCK, BTN_BUYERS,
     BTN_PAYMENT, BTN_BAKONG, BTN_CHANNEL, BTN_ADMINS, BTN_MAINTENANCE, BTN_BROADCAST,
     BTN_BACK_SETTINGS, BTN_PAYMENT_EDIT, BTN_BAKONG_API_EDIT, BTN_BAKONG_TOKEN_INFO,
     BTN_CHANNEL_EDIT, BTN_CHANNEL_CLEAR, BTN_ADMIN_ADD, BTN_ADMIN_REMOVE,
@@ -980,10 +965,10 @@ ADMIN_KB = ReplyKeyboardMarkup(
 ADMIN_SETTINGS_KB = ReplyKeyboardMarkup([
     [KeyboardButton(BTN_ADD_ACCOUNT),  KeyboardButton(BTN_DELETE_TYPE)],
     [KeyboardButton(BTN_STOCK),        KeyboardButton(BTN_BUYERS)],
-    [KeyboardButton(BTN_USERS),        KeyboardButton(BTN_EMAIL_MGMT)],
-    [KeyboardButton(BTN_PAYMENT),      KeyboardButton(BTN_BAKONG)],
-    [KeyboardButton(BTN_CHANNEL),      KeyboardButton(BTN_ADMINS)],
-    [KeyboardButton(BTN_MAINTENANCE),  KeyboardButton(BTN_BROADCAST)],
+    [KeyboardButton(BTN_EMAIL_MGMT),   KeyboardButton(BTN_PAYMENT)],
+    [KeyboardButton(BTN_BAKONG),       KeyboardButton(BTN_CHANNEL)],
+    [KeyboardButton(BTN_ADMINS),       KeyboardButton(BTN_MAINTENANCE)],
+    [KeyboardButton(BTN_BROADCAST)],
 ], resize_keyboard=True, is_persistent=True)
 
 CANCEL_INPUT_KB = ReplyKeyboardMarkup(
@@ -1278,25 +1263,6 @@ async def _prompt_admin_input(chat_id, user_id, key, prompt_text):
                    reply_markup=CANCEL_INPUT_KB)
 
 
-async def notify_admin_new_user(user_id, first_name, last_name, username):
-    if not user_id or user_id == ADMIN_ID:
-        return
-    if user_id in _notified_users:
-        return
-    already = await run_sync(_is_admin_notified, user_id)
-    if already:
-        return
-    _notified_users.add(user_id)
-    full_name = f"{first_name or ''} {last_name or ''}".strip() or "N/A"
-    uname_str = f"@{username}" if username else "—"
-    msg = (
-        "🆕 អ្នកប្រើប្រាស់ថ្មី!\n\n"
-        f"👤 ឈ្មោះ: {html.escape(full_name)}\n"
-        f"🔖 Username: {html.escape(uname_str)}\n"
-        f"🪪 ID: <code>{user_id}</code>"
-    )
-    await send_msg(ADMIN_ID, msg)
-    asyncio.create_task(run_sync(_upsert_known_user, user_id, first_name, last_name, username))
 
 
 def _upsert_known_user(user_id, first_name, last_name, username):
@@ -1541,29 +1507,6 @@ async def deliver_accounts(chat_id, user_id, session, payment_data=None, user_na
 
 
 # ── 15. Admin helper functions ────────────────────────────────────────────────
-async def _show_users_list_inline(chat_id):
-    try:
-        r = await run_sync(
-            _db_query,
-            "SELECT user_id,first_name,last_name,username,first_seen FROM bot_known_users ORDER BY first_seen DESC")
-        rows = r.get("rows", [])
-    except Exception as e:
-        rows = []
-    if not rows:
-        await send_msg(chat_id, "📭 <b>មិនទាន់មានអ្នកប្រើប្រាស់ទេ។</b>",
-                       reply_markup=BACK_SETTINGS_KB)
-        return
-    total = len(rows)
-    lines = [f"👥 អ្នកប្រើប្រាស់សរុប: {total}", ""]
-    for i, row in enumerate(rows, 1):
-        full_name = (f"{row.get('first_name') or ''} {row.get('last_name') or ''}").strip() or "N/A"
-        uname = row.get("username") or ""
-        lines += [f"{i}. {full_name}", f"   🔖 {'@'+uname if uname else '—'}", f"   🪪 {row.get('user_id')}", ""]
-    fname = f"users_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.txt"
-    await send_document(chat_id, "\n".join(lines).encode("utf-8"), fname,
-                        caption=f"👥 បញ្ជីអ្នកប្រើប្រាស់ — {total} នាក់")
-    await send_admin_settings_menu(chat_id)
-
 
 async def _show_delete_type_menu_inline(chat_id, user_id):
     async with _data_lock:
@@ -1826,8 +1769,6 @@ async def _dispatch_admin_button(update: Update, user_id, chat_id, btn):
         await _show_delete_type_menu_inline(chat_id, user_id)
     elif btn == BTN_STOCK:
         await _export_stock_inline(chat_id)
-    elif btn == BTN_USERS:
-        await _show_users_list_inline(chat_id)
     elif btn == BTN_BUYERS:
         await _export_buyers_report_inline(chat_id)
     elif btn == BTN_PAYMENT:
@@ -2268,8 +2209,7 @@ async def on_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat_id = update.effective_chat.id
-    asyncio.create_task(
-        notify_admin_new_user(user.id, user.first_name, user.last_name, user.username))
+    asyncio.create_task(run_sync(_upsert_known_user, user.id, user.first_name, user.last_name, user.username))
     async with get_user_lock(user.id):
         if await _has_active_purchase(user.id):
             await _notify_must_finish_order(chat_id)
@@ -2309,10 +2249,8 @@ async def on_private_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await send_msg(chat_id, "🔧 <b>Bot កំពុង Update សូមរង់ចាំមួយភ្លែត...</b>")
         return
 
-    # Notify admin of new user
     if not is_admin(user_id):
-        asyncio.create_task(
-            notify_admin_new_user(user_id, user.first_name, user.last_name, user.username))
+        asyncio.create_task(run_sync(_upsert_known_user, user_id, user.first_name, user.last_name, user.username))
 
     btn = text.strip()
 
@@ -2638,8 +2576,7 @@ async def on_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data    = callback_query.data or ""
     logger.info(f"Callback from {user.first_name} (ID:{user_id}): {data}")
 
-    asyncio.create_task(
-        notify_admin_new_user(user_id, user.first_name, user.last_name, user.username))
+    asyncio.create_task(run_sync(_upsert_known_user, user_id, user.first_name, user.last_name, user.username))
 
     async with get_user_lock(user_id):
         await _handle_callback_locked(callback_query, user, user_id, chat_id, data)
