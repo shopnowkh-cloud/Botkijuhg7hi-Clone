@@ -23,9 +23,12 @@ async def _init_app():
     if _initialized:
         return
     try:
-        from telegram_bot_simple import application, _register_handlers
+        from telegram_bot_simple import application, _register_handlers, _on_startup
         _register_handlers()
         await application.initialize()
+        # post_init is NOT called by initialize() — only by run_polling/run_webhook
+        # so we invoke _on_startup manually to init DB, load data, and settings
+        await _on_startup(application)
         _initialized = True
         logger.info("Bot application initialized via webhook cold start")
     except Exception as e:
@@ -41,11 +44,6 @@ async def _handle_update(body: bytes):
     update_data = json.loads(body)
     update = Update.de_json(update_data, application.bot)
     await application.process_update(update)
-
-    # drain fire-and-forget tasks (e.g. _upsert_known_user)
-    pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-    if pending:
-        await asyncio.gather(*pending, return_exceptions=True)
 
 
 class handler(BaseHTTPRequestHandler):

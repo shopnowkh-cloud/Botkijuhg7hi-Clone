@@ -354,6 +354,9 @@ def _load_data():
             data = r["rows"][0]["data"]
             if isinstance(data, str):
                 data = json.loads(data)
+            data.setdefault("accounts", [])
+            data.setdefault("account_types", {})
+            data.setdefault("prices", {})
             logger.info("Loaded accounts data from PostgreSQL")
             return data
     except Exception as e:
