@@ -94,6 +94,7 @@ _validate_env()
 
 # ── 3. Config ────────────────────────────────────────────────────────────────
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+WEBHOOK_MODE = os.environ.get("BOT_WEBHOOK_MODE", "") == "1"
 
 ADMIN_ID: int = 5002402843
 MAINTENANCE_MODE = False
@@ -2617,10 +2618,14 @@ async def _on_startup(app_: Application):
 
     await _resume_scheduled_deletions()
     await run_sync(_cleanup_expired_pending_payments)
-    asyncio.create_task(_pending_payment_sweeper(60))
-    logger.info("Pending-payment sweeper started (every 60s)")
-    asyncio.create_task(_email_poller(10))
-    logger.info("Email poller started (every 10s)")
+
+    if not WEBHOOK_MODE:
+        asyncio.create_task(_pending_payment_sweeper(60))
+        logger.info("Pending-payment sweeper started (every 60s)")
+        asyncio.create_task(_email_poller(10))
+        logger.info("Email poller started (every 10s)")
+    else:
+        logger.info("Webhook mode — background pollers skipped")
 
     me = await _bot.get_me()
     logger.info(f"Bot connected: @{me.username}")
