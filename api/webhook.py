@@ -43,8 +43,14 @@ async def _init_once():
     _initialising = True
     try:
         bot._register_handlers()
+        # Disable post_init — PTB skips it if application._initialized is already True
+        # (happens on retry after a partial cold-start failure).
+        # We call _on_startup explicitly below so it always runs.
+        bot.application.post_init = None
         await bot.application.initialize()
-        await bot.application.start()
+        await bot._on_startup(bot.application)   # always explicit
+        if not bot.application.running:
+            await bot.application.start()
         _initialized = True
         logger.info("Bot application initialised (webhook mode)")
     except Exception:
