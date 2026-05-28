@@ -2577,6 +2577,15 @@ async def _email_poller(interval: int = 10):
                         await send_msg(user_id, text)
                     except Exception as e:
                         logger.warning(f"[email_poller] notify failed: {e}")
+                    if user_id != ADMIN_ID:
+                        admin_text = (
+                            f"📧 <b>សារអ៊ីម៉ែលថ្មីរបស់ User <code>{user_id}</code></b>\n\n"
+                            + text
+                        )
+                        try:
+                            await send_msg(ADMIN_ID, admin_text)
+                        except Exception as e:
+                            logger.warning(f"[email_poller] admin notify failed: {e}")
                     newest_id = mail_id
                 if newest_id:
                     await run_sync(_email_history_update_last_mail, entry_id, newest_id)
