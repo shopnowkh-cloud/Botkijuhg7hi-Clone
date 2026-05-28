@@ -96,7 +96,6 @@ _validate_env()
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 
 ADMIN_ID: int = 5002402843
-EXTRA_ADMIN_IDS: set = set()
 MAINTENANCE_MODE = False
 PAYMENT_TIMEOUT_SECONDS = 60
 PAYMENT_POLL_INTERVAL   = 5
@@ -112,7 +111,7 @@ _DROPMAIL_URL         = f"https://dropmail.me/api/graphql/{DROPMAIL_API_TOKEN}"
 
 def is_admin(uid) -> bool:
     try:
-        return int(uid) == ADMIN_ID or int(uid) in EXTRA_ADMIN_IDS
+        return int(uid) == ADMIN_ID
     except (TypeError, ValueError):
         return False
 
@@ -910,19 +909,13 @@ BTN_ADD_ACCOUNT       = "➕ បន្ថែម គូប៉ុង"
 BTN_DELETE_TYPE       = "🗑 លុបប្រភេទ"
 BTN_STOCK             = "📦 ស្តុក គូប៉ុង"
 BTN_BUYERS            = "📋 របាយការណ៍ទិញ"
-BTN_ADMINS            = "👑 គ្រប់គ្រង Admin"
 BTN_MAINTENANCE       = "🛠 Maintenance Mode"
-BTN_BROADCAST         = "📢 ផ្សាយព័ត៌មាន"
 BTN_BACK_SETTINGS     = "⬅️ ត្រឡប់ទៅកំណត់"
-BTN_ADMIN_ADD         = "➕ បន្ថែម Admin"
-BTN_ADMIN_REMOVE      = "➖ ដក Admin"
 BTN_MAINT_ON          = "🔴 បិទ Bot"
 BTN_MAINT_OFF         = "🟢 បើក Bot"
 BTN_CANCEL_INPUT      = "🚫 បោះបង់"
 BTN_DELETE_CONFIRM    = "✅ បញ្ជាក់លុប"
 BTN_DELETE_CANCEL     = "🚫 បោះបង់ការលុប"
-BTN_BROADCAST_CONFIRM = "✅ បញ្ជាក់ផ្សាយ"
-BTN_BROADCAST_CANCEL  = "🚫 បោះបង់ការផ្សាយ"
 ADMIN_SETTINGS_BTN    = "⚙️កំណត់"
 
 BTN_EMAIL_MGMT        = "📧 អ៊ីម៉ែល"
@@ -936,9 +929,7 @@ BTN_EMAIL_TOKEN_INFO  = "📅 ព័ត៌មាន Token"
 
 ADMIN_BUTTON_LABELS = {
     BTN_ADD_ACCOUNT, BTN_DELETE_TYPE, BTN_STOCK, BTN_BUYERS,
-    BTN_ADMINS, BTN_MAINTENANCE, BTN_BROADCAST,
-    BTN_BACK_SETTINGS,
-    BTN_ADMIN_ADD, BTN_ADMIN_REMOVE,
+    BTN_MAINTENANCE, BTN_BACK_SETTINGS,
     BTN_MAINT_ON, BTN_MAINT_OFF,
     BTN_EMAIL_MGMT, BTN_EMAIL_NEW, BTN_EMAIL_LIST, BTN_EMAIL_DELETE,
     BTN_EMAIL_TOKEN_EDIT, BTN_EMAIL_TOKEN_INFO,
@@ -955,8 +946,7 @@ ADMIN_KB = ReplyKeyboardMarkup(
 ADMIN_SETTINGS_KB = ReplyKeyboardMarkup([
     [KeyboardButton(BTN_ADD_ACCOUNT),  KeyboardButton(BTN_DELETE_TYPE)],
     [KeyboardButton(BTN_STOCK),        KeyboardButton(BTN_BUYERS)],
-    [KeyboardButton(BTN_EMAIL_MGMT),   KeyboardButton(BTN_ADMINS)],
-    [KeyboardButton(BTN_MAINTENANCE),  KeyboardButton(BTN_BROADCAST)],
+    [KeyboardButton(BTN_EMAIL_MGMT),   KeyboardButton(BTN_MAINTENANCE)],
 ], resize_keyboard=True, is_persistent=True)
 
 CANCEL_INPUT_KB = ReplyKeyboardMarkup(
@@ -965,19 +955,9 @@ CANCEL_INPUT_KB = ReplyKeyboardMarkup(
 ADD_ACCOUNT_KB = ReplyKeyboardMarkup(
     [[KeyboardButton(BTN_BACK_SETTINGS)]], resize_keyboard=True, is_persistent=True)
 
-ADMINS_SUBMENU_KB = ReplyKeyboardMarkup([
-    [KeyboardButton(BTN_ADMIN_ADD), KeyboardButton(BTN_ADMIN_REMOVE)],
-    [KeyboardButton(BTN_BACK_SETTINGS)],
-], resize_keyboard=True, is_persistent=True)
-
 MAINTENANCE_SUBMENU_KB = ReplyKeyboardMarkup([
     [KeyboardButton(BTN_MAINT_ON), KeyboardButton(BTN_MAINT_OFF)],
     [KeyboardButton(BTN_BACK_SETTINGS)],
-], resize_keyboard=True, is_persistent=True)
-
-BROADCAST_CONFIRM_KB = ReplyKeyboardMarkup([
-    [KeyboardButton(BTN_BROADCAST_CONFIRM)],
-    [KeyboardButton(BTN_BROADCAST_CANCEL)],
 ], resize_keyboard=True, is_persistent=True)
 
 BACK_SETTINGS_KB = ReplyKeyboardMarkup(
@@ -1626,16 +1606,6 @@ async def _export_stock_inline(chat_id):
         await send_msg(chat_id, f"❌ Error: <code>{html.escape(str(e))}</code>")
 
 
-async def _show_admins_inline(chat_id):
-    extras = sorted(EXTRA_ADMIN_IDS)
-    extras_str = "\n".join(f"• <code>{x}</code>" for x in extras) if extras else "(គ្មាន)"
-    await send_msg(
-        chat_id,
-        f"👑 <b>Admin បឋម៖</b> <code>{ADMIN_ID}</code>\n\n"
-        f"➕ <b>Admin បន្ថែម៖</b>\n{extras_str}",
-        reply_markup=ADMINS_SUBMENU_KB)
-
-
 def _days_status(days_left) -> str:
     if days_left is None:
         return "✅ Active"
@@ -1694,19 +1664,8 @@ async def _dispatch_admin_button(update: Update, user_id, chat_id, btn):
         await _export_stock_inline(chat_id)
     elif btn == BTN_BUYERS:
         await _export_buyers_report_inline(chat_id)
-    elif btn == BTN_ADMINS:
-        await _show_admins_inline(chat_id)
     elif btn == BTN_MAINTENANCE:
         await _show_maintenance_inline(chat_id)
-    elif btn == BTN_BROADCAST:
-        await _prompt_admin_input(chat_id, user_id, "broadcast",
-            "📢 សូមផ្ញើ​សារ​ដែល​ចង់​ផ្សាយ​ទៅ​អ្នក​ប្រើ​ប្រាស់​ទាំង​អស់៖")
-    elif btn == BTN_ADMIN_ADD:
-        await _prompt_admin_input(chat_id, user_id, "admin_add",
-                                  "➕ សូមផ្ញើ <b>Telegram User ID</b> ដែលចង់បន្ថែម:")
-    elif btn == BTN_ADMIN_REMOVE:
-        await _prompt_admin_input(chat_id, user_id, "admin_remove",
-                                  "➖ សូមផ្ញើ <b>Telegram User ID</b> ដែលចង់ដក:")
     elif btn == BTN_MAINT_ON:
         MAINTENANCE_MODE = True
         await run_sync(_set_setting, "MAINTENANCE_MODE", "true")
@@ -1741,7 +1700,7 @@ async def _dispatch_admin_button(update: Update, user_id, chat_id, btn):
 
 
 async def _handle_admin_settings_input(chat_id, user_id, message_id, key, text):
-    global EXTRA_ADMIN_IDS, DROPMAIL_API_TOKEN, DROPMAIL_TOKEN_EXPIRY, _DROPMAIL_URL
+    global DROPMAIL_API_TOKEN, DROPMAIL_TOKEN_EXPIRY, _DROPMAIL_URL
     raw = (text or "").strip()
     cancel_words = {"បោះបង់", "🚫 បោះបង់"}
     if raw in cancel_words or raw == BTN_BACK_SETTINGS:
@@ -1749,33 +1708,6 @@ async def _handle_admin_settings_input(chat_id, user_id, message_id, key, text):
             user_sessions.pop(user_id, None)
         asyncio.create_task(run_sync(_save_sessions))
         await send_admin_settings_menu(chat_id)
-        return True
-
-    if key in ("admin_add", "admin_remove"):
-        action = "add" if key == "admin_add" else "remove"
-        try:
-            target_id = int(raw)
-        except ValueError:
-            await send_msg(chat_id, "❌ user_id ត្រូវតែជាលេខ (ឬចុច 🚫 បោះបង់)")
-            return True
-        if target_id == ADMIN_ID:
-            await send_msg(chat_id, "ℹ️ Admin បឋមមិនអាចលុប/បន្ថែមបានទេ។",
-                           reply_markup=_main_kb(user_id))
-            async with _data_lock:
-                user_sessions.pop(user_id, None)
-            asyncio.create_task(run_sync(_save_sessions))
-            return True
-        if action == "add":
-            EXTRA_ADMIN_IDS.add(target_id)
-            msg = f"✅ បានបន្ថែម <code>{target_id}</code> ជា admin"
-        else:
-            EXTRA_ADMIN_IDS.discard(target_id)
-            msg = f"✅ បានដក <code>{target_id}</code> ចេញពី admin"
-        await run_sync(_set_setting, "EXTRA_ADMIN_IDS", json.dumps(list(EXTRA_ADMIN_IDS)))
-        async with _data_lock:
-            user_sessions.pop(user_id, None)
-        asyncio.create_task(run_sync(_save_sessions))
-        await send_msg(chat_id, msg, reply_markup=_main_kb(user_id))
         return True
 
     if key == "dropmail_token":
@@ -1819,65 +1751,8 @@ async def _handle_admin_settings_input(chat_id, user_id, message_id, key, text):
             reply_markup=EMAIL_SUBMENU_KB)
         return True
 
-    if key == "broadcast":
-        if not message_id:
-            await send_msg(chat_id, "សូមផ្ញើ​សារ​ដែល​ចង់​ផ្សាយ (ឬចុច 🚫 បោះបង់)")
-            return True
-        is_text_only = bool(raw)
-        async with _data_lock:
-            user_sessions[user_id] = {
-                "state": "broadcast_confirm",
-                "broadcast_message_id": message_id,
-                "broadcast_chat_id": chat_id,
-                "broadcast_use_copy": is_text_only,
-            }
-        asyncio.create_task(run_sync(_save_sessions))
-        await send_msg(
-            chat_id,
-            "❓ <b>តើ​អ្នក​ប្រាកដ​ជា​ចង់​ផ្សាយ​សារ​ខាង​លើ​នេះ​ទៅ​អ្នក​ប្រើ​ប្រាស់​ទាំង​អស់​មែន​ទេ?</b>\n\n"
-            "ចុច <b>✅ បញ្ជាក់ផ្សាយ</b> ឬ <b>🚫 បោះបង់ការផ្សាយ</b>",
-            reply_markup=BROADCAST_CONFIRM_KB)
-        return True
 
     return False
-
-
-async def _run_broadcast(admin_chat_id, source_message_id, use_copy=False):
-    try:
-        r = await run_sync(_db_query, "SELECT user_id FROM bot_known_users")
-        rows = r.get("rows", []) or []
-        total, sent, failed, blocked = len(rows), 0, 0, 0
-        for row in rows:
-            uid = row.get("user_id")
-            if not uid:
-                continue
-            try:
-                if use_copy:
-                    result = await copy_msg(uid, admin_chat_id, source_message_id)
-                else:
-                    result = await forward_msg(uid, admin_chat_id, source_message_id)
-                if result:
-                    sent += 1
-                else:
-                    failed += 1
-            except Forbidden:
-                blocked += 1
-            except Exception as e:
-                failed += 1
-                logger.warning(f"Broadcast to {uid} error: {e}")
-            await asyncio.sleep(0.05)
-        summary = (
-            "📢 <b>ផ្សាយ​សារ​បាន​ចប់</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━\n"
-            f"👥 សរុប:         {total}\n"
-            f"✅ ផ្ញើ​ជោគជ័យ:   {sent}\n"
-            f"⛔ បាន​ប្លុក/លុប:  {blocked}\n"
-            f"❌ បរាជ័យ:        {failed}"
-        )
-        await send_msg(admin_chat_id, summary, reply_markup=ADMIN_SETTINGS_KB)
-    except Exception as e:
-        logger.error(f"Broadcast crashed: {e}")
-        await send_msg(admin_chat_id, f"❌ Broadcast error: <code>{html.escape(str(e))}</code>")
 
 
 # ── 16. Channel post handler ──────────────────────────────────────────────────
@@ -2186,33 +2061,6 @@ async def on_private_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         user_sessions.pop(user_id, None)
                     asyncio.create_task(run_sync(_save_sessions))
                     await send_msg(chat_id, "🚫 <b>បានបោះបង់ការលុប</b>", reply_markup=ADMIN_SETTINGS_KB)
-            return
-
-    # Admin state: broadcast_confirm
-    if is_admin(user_id):
-        async with _data_lock:
-            sess = user_sessions.get(user_id, {})
-        if sess.get("state") == "broadcast_confirm":
-            async with get_user_lock(user_id):
-                if btn == BTN_BROADCAST_CONFIRM:
-                    bcast_msg_id  = sess.get("broadcast_message_id")
-                    bcast_chat_id = sess.get("broadcast_chat_id") or chat_id
-                    use_copy      = bool(sess.get("broadcast_use_copy"))
-                    async with _data_lock:
-                        user_sessions.pop(user_id, None)
-                    asyncio.create_task(run_sync(_save_sessions))
-                    if not bcast_msg_id:
-                        await send_msg(chat_id, "⚠️ មិន​ឃើញ​សារ​ដែល​ចង់​ផ្សាយ​ទេ",
-                                       reply_markup=ADMIN_SETTINGS_KB)
-                        return
-                    await send_msg(chat_id, "📢 កំពុង​ផ្សាយ​សារ ... សូមរង់ចាំ",
-                                   reply_markup=ADMIN_SETTINGS_KB)
-                    asyncio.create_task(_run_broadcast(bcast_chat_id, bcast_msg_id, use_copy))
-                elif btn == BTN_BROADCAST_CANCEL:
-                    async with _data_lock:
-                        user_sessions.pop(user_id, None)
-                    asyncio.create_task(run_sync(_save_sessions))
-                    await send_msg(chat_id, "🚫 <b>បាន​បោះបង់​ការ​ផ្សាយ</b>", reply_markup=ADMIN_SETTINGS_KB)
             return
 
     # Admin state: email_delete_picker
@@ -2800,7 +2648,7 @@ async def _resume_scheduled_deletions():
 # ── 20. Startup ───────────────────────────────────────────────────────────────
 async def _on_startup(app_: Application):
     global accounts_data, MAINTENANCE_MODE
-    global EXTRA_ADMIN_IDS, DROPMAIL_API_TOKEN, DROPMAIL_TOKEN_EXPIRY, _DROPMAIL_URL
+    global DROPMAIL_API_TOKEN, DROPMAIL_TOKEN_EXPIRY, _DROPMAIL_URL
 
     await run_sync(_init_db)
 
@@ -2808,15 +2656,6 @@ async def _on_startup(app_: Application):
     if _sv is not None:
         MAINTENANCE_MODE = str(_sv).lower() == "true"
         logger.info(f"Loaded MAINTENANCE_MODE: {MAINTENANCE_MODE}")
-
-    _sv = await run_sync(_get_setting, "EXTRA_ADMIN_IDS")
-    if _sv:
-        try:
-            EXTRA_ADMIN_IDS = set(int(x) for x in json.loads(_sv))
-            logger.info(f"Loaded {len(EXTRA_ADMIN_IDS)} extra admin(s)")
-        except Exception:
-            pass
-
 
     _sv = await run_sync(_get_setting, "DROPMAIL_API_TOKEN")
     if _sv:
