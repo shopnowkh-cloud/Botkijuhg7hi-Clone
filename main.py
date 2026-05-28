@@ -234,65 +234,55 @@ _bot: Bot = application.bot
 # ── 8. Database layer ──────────────────────────────────────────────────────────
 
 def _init_db():
-    try:
-        _db_query("""
-            CREATE TABLE IF NOT EXISTS bot_accounts (
+    _ddl_statements = [
+        """CREATE TABLE IF NOT EXISTS bot_accounts (
                 id SERIAL PRIMARY KEY,
                 data TEXT NOT NULL DEFAULT '{}'
-            )""")
-        _db_query("""
-            CREATE TABLE IF NOT EXISTS bot_sessions (
+            )""",
+        """CREATE TABLE IF NOT EXISTS bot_sessions (
                 id SERIAL PRIMARY KEY,
                 data TEXT NOT NULL DEFAULT '{}'
-            )""")
-        _db_query("""
-            CREATE TABLE IF NOT EXISTS bot_pending_payments (
+            )""",
+        """CREATE TABLE IF NOT EXISTS bot_pending_payments (
                 user_id BIGINT PRIMARY KEY, chat_id BIGINT NOT NULL,
                 account_type TEXT, quantity INTEGER, total_price REAL,
                 md5_hash TEXT, qr_message_id BIGINT,
                 reserved_accounts TEXT DEFAULT '[]',
                 created_at TIMESTAMP DEFAULT NOW()
-            )""")
-        _db_query("""
-            CREATE TABLE IF NOT EXISTS bot_purchase_history (
+            )""",
+        """CREATE TABLE IF NOT EXISTS bot_purchase_history (
                 id SERIAL PRIMARY KEY, user_id BIGINT NOT NULL,
                 account_type TEXT, quantity INTEGER, total_price REAL,
                 accounts TEXT DEFAULT '[]',
                 purchased_at TIMESTAMP DEFAULT NOW()
-            )""")
-        _db_query("""
-            CREATE TABLE IF NOT EXISTS bot_known_users (
+            )""",
+        """CREATE TABLE IF NOT EXISTS bot_known_users (
                 user_id BIGINT PRIMARY KEY, first_name TEXT, last_name TEXT,
                 username TEXT,
                 first_seen TIMESTAMP DEFAULT NOW(),
                 last_seen TIMESTAMP DEFAULT NOW(),
                 admin_notified INTEGER DEFAULT 0
-            )""")
-        _db_query("""
-            CREATE TABLE IF NOT EXISTS bot_sent_verifications (
+            )""",
+        """CREATE TABLE IF NOT EXISTS bot_sent_verifications (
                 email TEXT NOT NULL, code TEXT NOT NULL,
                 first_sent_at TIMESTAMP DEFAULT NOW(),
                 PRIMARY KEY (email, code)
-            )""")
-        _db_query("""
-            CREATE TABLE IF NOT EXISTS bot_settings (
+            )""",
+        """CREATE TABLE IF NOT EXISTS bot_settings (
                 key TEXT PRIMARY KEY, value TEXT
-            )""")
-        _db_query("""
-            CREATE TABLE IF NOT EXISTS bot_scheduled_deletions (
+            )""",
+        """CREATE TABLE IF NOT EXISTS bot_scheduled_deletions (
                 id SERIAL PRIMARY KEY, chat_id BIGINT NOT NULL,
                 message_id BIGINT NOT NULL, delete_at TIMESTAMP NOT NULL,
                 created_at TIMESTAMP DEFAULT NOW(),
                 UNIQUE (chat_id, message_id)
-            )""")
-        _db_query("""
-            CREATE TABLE IF NOT EXISTS bot_email_buyer_map (
+            )""",
+        """CREATE TABLE IF NOT EXISTS bot_email_buyer_map (
                 email TEXT PRIMARY KEY, user_id BIGINT NOT NULL,
                 account_type TEXT,
                 purchased_at TIMESTAMP DEFAULT NOW()
-            )""")
-        _db_query("""
-            CREATE TABLE IF NOT EXISTS email_history (
+            )""",
+        """CREATE TABLE IF NOT EXISTS email_history (
                 id SERIAL PRIMARY KEY,
                 telegram_user_id BIGINT NOT NULL,
                 email_address TEXT NOT NULL,
@@ -301,18 +291,28 @@ def _init_db():
                 restore_key TEXT,
                 last_mail_id TEXT,
                 created_at TIMESTAMP DEFAULT NOW()
-            )""")
-        _db_query("CREATE INDEX IF NOT EXISTS idx_email_history_user ON email_history(telegram_user_id)")
+            )""",
+        "CREATE INDEX IF NOT EXISTS idx_email_history_user ON email_history(telegram_user_id)",
+    ]
+    for stmt in _ddl_statements:
+        try:
+            _db_query(stmt)
+        except Exception as e:
+            logger.warning(f"DDL warning (non-fatal): {e}")
+    try:
         r = _db_query("SELECT COUNT(*) as cnt FROM bot_accounts")
         if int(r["rows"][0]["cnt"]) == 0:
             _db_query("INSERT INTO bot_accounts (data) VALUES (%s)",
                       [json.dumps({"accounts": [], "account_types": {}, "prices": {}})])
+    except Exception as e:
+        logger.error(f"Failed to seed bot_accounts: {e}")
+    try:
         r = _db_query("SELECT COUNT(*) as cnt FROM bot_sessions")
         if int(r["rows"][0]["cnt"]) == 0:
             _db_query("INSERT INTO bot_sessions (data) VALUES (%s)", [json.dumps({})])
-        logger.info("PostgreSQL DB initialized ✓")
     except Exception as e:
-        logger.error(f"DB init failed: {e}")
+        logger.error(f"Failed to seed bot_sessions: {e}")
+    logger.info("PostgreSQL DB initialized ✓")
 
 
 def _get_setting(key, default=None):
