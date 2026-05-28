@@ -904,8 +904,24 @@ def _check_payment_status(md5):
 
 
 # ── 10. Global state ──────────────────────────────────────────────────────────
-accounts_data: dict = {}
+accounts_data: dict = {"accounts": [], "account_types": {}, "prices": {}}
 user_sessions: dict = {}
+_data_initialized: bool = False
+
+
+def _ensure_data_loaded():
+    global accounts_data, user_sessions, _data_initialized
+    if _data_initialized:
+        return
+    try:
+        _init_db()
+        data = _load_data()
+        accounts_data.update(data)
+        _load_sessions()
+        _data_initialized = True
+        logger.info("Lazy-loaded data from DB (serverless cold start)")
+    except Exception as e:
+        logger.error(f"_ensure_data_loaded failed: {e}")
 
 # ── 11. Keyboard builders ─────────────────────────────────────────────────────
 BTN_ADD_ACCOUNT       = "➕ បន្ថែម គូប៉ុង"
@@ -1182,6 +1198,7 @@ async def _reset_user_session(user_id: int, save=True):
 
 
 async def show_account_selection(chat_id):
+    await run_sync(_ensure_data_loaded)
     async with _data_lock:
         available = [
             (at, len(accs), accounts_data["prices"].get(at, 0))
@@ -1917,6 +1934,7 @@ async def on_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def on_private_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.effective_user:
         return
+    await run_sync(_ensure_data_loaded)
     user    = update.effective_user
     user_id = user.id
     chat_id = update.effective_chat.id
@@ -2213,6 +2231,7 @@ async def _handle_admin_session_message(update: Update, user_id, chat_id, messag
 
 
 async def on_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await run_sync(_ensure_data_loaded)
     callback_query = update.callback_query
     user    = callback_query.from_user
     user_id = user.id
@@ -2595,6 +2614,7 @@ async def _resume_scheduled_deletions():
 async def _on_startup(app_: Application):
     global accounts_data, MAINTENANCE_MODE
     global DROPMAIL_API_TOKEN, DROPMAIL_TOKEN_EXPIRY, _DROPMAIL_URL
+    global _data_initialized
 
     await run_sync(_init_db)
 
@@ -2617,6 +2637,7 @@ async def _on_startup(app_: Application):
     data = await run_sync(_load_data)
     accounts_data.update(data)
     await run_sync(_load_sessions)
+    _data_initialized = True
 
     await _resume_scheduled_deletions()
     await run_sync(_cleanup_expired_pending_payments)
